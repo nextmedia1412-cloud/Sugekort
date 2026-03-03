@@ -84,8 +84,8 @@
     el.btnBackToScan.addEventListener('click', () => showScreen('screenScan'));
     el.btnTopup100.addEventListener('click', () => quickActionTopup(10000));
     el.btnDeduct10.addEventListener('click', () => quickActionDeduct(1000));
-    el.btnDeduct25.addEventListener('click', () => quickActionDeduct(2500));
-    el.btnDeduct50.addEventListener('click', () => quickActionDeduct(5000));
+    el.btnDeduct25.addEventListener('click', () => quickActionDeduct(2000));
+    el.btnDeduct50.addEventListener('click', () => quickActionDeduct(3000));
     el.btnShowHistory.addEventListener('click', showCurrentCardHistory);
 
     el.btnAdminTopup.addEventListener('click', () => adminCustomAction('topup'));
