@@ -59,7 +59,7 @@
       'screenScan', 'screenMember', 'screenRegister', 'screenHistory', 'screenSettings',
       'memberName', 'memberStatus', 'memberBalance', 'memberCardId', 'memberUpdated',
       'btnTopup100', 'btnDeduct10', 'btnDeduct25', 'btnDeduct50', 'btnShowHistory', 'btnBackToScan',
-      'adminPanel', 'adminAmountInput', 'btnAdminTopup', 'btnAdminDeduct', 'btnBlockUnblock',
+      'adminPanel', 'adminAmountInput', 'btnAdminTopup', 'btnAdminDeduct', 'btnBlockUnblock', 'btnDeleteCard',
       'regScannedId', 'regSource', 'regGeneratedId', 'regHint', 'regMemberName', 'regActive', 'regWriteNdef',
       'btnRegisterSave', 'btnRegisterCancel',
       'historyTitle', 'historyList', 'btnHistoryExportCsv', 'btnHistoryBack',
@@ -87,6 +87,7 @@
     el.btnDeduct25.addEventListener('click', () => quickActionDeduct(2000));
     el.btnDeduct50.addEventListener('click', () => quickActionDeduct(3000));
     el.btnShowHistory.addEventListener('click', showCurrentCardHistory);
+    el.btnDeleteCard.addEventListener('click', deleteCurrentCardFromDatabase);
 
     el.btnAdminTopup.addEventListener('click', () => adminCustomAction('topup'));
     el.btnAdminDeduct.addEventListener('click', () => adminCustomAction('deduct'));
@@ -548,6 +549,84 @@
       vibrateError();
     }
   }
+
+  async function deleteCurrentCardFromDatabase() {
+  if (!state.currentCard) {
+    showMessage('Intet kort valgt.', 'error');
+    return;
+  }
+
+  // Optional: kræv admin PIN (anbefalet)
+  const passed = await ensureAdminAccess();
+  if (!passed) return;
+
+  const card = state.currentCard;
+  const balanceOre = state.currentBalanceOre ?? 0;
+
+  const ok = confirm(
+    `Slet kort fra database?\n\n` +
+    `Navn: ${card.memberName}\n` +
+    `Kort ID: ${card.cardId}\n` +
+    `Saldo: ${formatOre(balanceOre)}\n\n` +
+    `Dette sletter kort, saldo og AL historik permanent på denne telefon.`
+  );
+  if (!ok) return;
+
+  try {
+    await runDbTransaction(['cards', 'balances', 'transactions'], 'readwrite', async (stores) => {
+      // Slet balance (balances keyPath = cardId)
+      await req(stores.balances.delete(card.cardId));
+
+      // Slet kort (cards keyPath = intern auto id)
+      if (typeof card.id !== 'undefined' && card.id !== null) {
+        await req(stores.cards.delete(card.id));
+      } else {
+        // fallback hvis currentCard mod forventning mangler intern id
+        const existing = await req(stores.cards.index('cardId').get(card.cardId));
+        if (existing && typeof existing.id !== 'undefined') {
+          await req(stores.cards.delete(existing.id));
+        }
+      }
+
+      // Slet alle transaktioner for kortet (transactions index = 'cardId')
+      await new Promise((resolve, reject) => {
+        const index = stores.transactions.index('cardId');
+        const cursorReq = index.openCursor(IDBKeyRange.only(card.cardId));
+
+        cursorReq.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+
+        cursorReq.onerror = () => {
+          reject(cursorReq.error || new Error('Kunne ikke slette transaktioner'));
+        };
+      });
+    });
+
+    // Ryd state + UI
+    state.currentCard = null;
+    state.currentBalanceOre = 0;
+
+    setScanState('Kort slettet', 'Kortet og tilknyttet data er slettet fra databasen.', 'success');
+    showScreen('screenScan');
+    showMessage('Kort slettet fra database ✅', 'success', 2200);
+    vibrateSuccess();
+
+    // (Valgfrit) ryd manuel søgeresultatliste
+    // renderManualResults([]);
+
+  } catch (err) {
+    console.error(err);
+    showMessage(`Kunne ikke slette kort: ${err.message || err}`, 'error');
+    vibrateError();
+  }
+}
 
   async function applyBalanceChange({ cardId, type, deltaOre, note = '', requireActiveCard = true, adminMode = false }) {
     try {
