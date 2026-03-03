@@ -480,7 +480,7 @@
 
 el.btnAdminTopup.disabled = false;
 el.btnAdminDeduct.disabled = false;
-
+}
   async function quickActionTopup(amountOre) {
     if (!state.currentCard) return;
     const ok = confirm(`Top-up ${formatOre(amountOre)} til ${state.currentCard.memberName}?`);
