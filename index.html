@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111111" />
+  <meta name="description" content="Lokal offline sugekort-app til klubbar med NFC" />
+  <title>Sugekort Bar</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Klubbar</div>
+        <h1 id="clubTitle">Sugekort Bar</h1>
+      </div>
+      <div class="status-stack">
+        <span id="offlineBadge" class="badge badge-muted">Tjekker…</span>
+        <span id="nfcBadge" class="badge badge-muted">NFC ukendt</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="screenScan" class="screen active" aria-labelledby="scanHeading">
+        <h2 id="scanHeading" class="screen-title">Scan kort</h2>
+        <div id="scanState" class="panel scan-state">
+          <div class="pulse"></div>
+          <div>
+            <div id="scanStateTitle" class="scan-state-title">Klar til scan</div>
+            <p id="scanStateText" class="muted">Hold NFC-kort/tag bag på telefonen og tryk “Start NFC scan”.</p>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <button id="btnStartScan" class="btn btn-primary btn-lg">Start NFC scan</button>
+          <button id="btnStopScan" class="btn btn-secondary btn-lg">Stop scan</button>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Manuel test / fallback</div>
+          <div class="row gap">
+            <input id="manualSearchInput" class="input" type="text" placeholder="Søg navn eller card ID" />
+            <button id="btnManualSearch" class="btn btn-secondary">Søg</button>
+          </div>
+          <div id="manualSearchResults" class="list"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Data & backup</div>
+          <div class="grid-2">
+            <button id="btnExportJson" class="btn btn-secondary">Eksportér JSON</button>
+            <button id="btnExportCsv" class="btn btn-secondary">Eksportér CSV</button>
+          </div>
+          <div class="row gap mt8">
+            <label class="btn btn-ghost file-btn" for="importJsonFile">Importér backup JSON</label>
+            <input id="importJsonFile" type="file" accept="application/json,.json" hidden />
+          </div>
+          <p class="tiny muted">Alt data er lokalt på telefonen (IndexedDB). Lav jævnligt backup.</p>
+        </div>
+      </section>
+
+      <section id="screenMember" class="screen" aria-labelledby="memberHeading">
+        <h2 id="memberHeading" class="screen-title">Kort fundet</h2>
+        <div class="panel member-card">
+          <div class="member-header">
+            <div>
+              <div id="memberName" class="member-name">—</div>
+              <div id="memberStatus" class="badge">—</div>
+            </div>
+            <div class="balance-box">
+              <div class="tiny muted">Saldo</div>
+              <div id="memberBalance" class="balance-amount">0,00 kr</div>
+            </div>
+          </div>
+
+          <div class="kv">
+            <div class="kv-row"><span>Kort ID</span><code id="memberCardId">—</code></div>
+            <div class="kv-row"><span>Senest opdateret</span><span id="memberUpdated">—</span></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Hurtige handlinger</div>
+          <div class="grid-2 action-grid">
+            <button id="btnTopup100" class="btn btn-success btn-lg">Top-Up +100 kr</button>
+            <button id="btnDeduct10" class="btn btn-danger btn-lg">Træk -10 kr</button>
+            <button id="btnDeduct25" class="btn btn-danger btn-lg">Træk -25 kr</button>
+            <button id="btnDeduct50" class="btn btn-danger btn-lg">Træk -50 kr</button>
+          </div>
+          <div class="grid-2 mt8">
+            <button id="btnShowHistory" class="btn btn-secondary">Vis historik</button>
+            <button id="btnBackToScan" class="btn btn-ghost">Tilbage til scan</button>
+          </div>
+        </div>
+
+        <details class="panel admin-panel" id="adminPanel">
+          <summary>Admin (valgfrit)</summary>
+          <p class="tiny muted">Kræver PIN hvis du har sat en admin PIN i indstillinger.</p>
+          <div class="row gap wrap">
+            <input id="adminAmountInput" class="input" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Beløb i kr (fx 12.50)" />
+            <button id="btnAdminTopup" class="btn btn-secondary">Custom top-up</button>
+            <button id="btnAdminDeduct" class="btn btn-secondary">Custom træk</button>
+          </div>
+          <div class="row gap wrap mt8">
+            <button id="btnBlockUnblock" class="btn btn-secondary">Blokér / ophæv blokering</button>
+          </div>
+        </details>
+      </section>
+
+      <section id="screenRegister" class="screen" aria-labelledby="registerHeading">
+        <h2 id="registerHeading" class="screen-title">Opret nyt kort</h2>
+        <div class="panel">
+          <div class="panel-title">Kortdetaljer</div>
+          <div class="kv">
+            <div class="kv-row"><span>Scannet ID / fallback</span><code id="regScannedId">—</code></div>
+            <div class="kv-row"><span>Kilde</span><span id="regSource">—</span></div>
+            <div class="kv-row"><span>Nyt NDEF-ID (forslag)</span><code id="regGeneratedId">—</code></div>
+          </div>
+          <p id="regHint" class="tiny muted"></p>
+        </div>
+
+        <div class="panel">
+          <label class="label" for="regMemberName">Medlemsnavn</label>
+          <input id="regMemberName" class="input" type="text" placeholder="Fx Stefan" maxlength="80" />
+
+          <div class="row gap wrap mt8">
+            <label class="checkbox"><input id="regActive" type="checkbox" checked /> Aktivt kort</label>
+            <label class="checkbox"><input id="regWriteNdef" type="checkbox" checked /> Skriv nyt NDEF-ID til kort (anbefalet)</label>
+          </div>
+
+          <div class="grid-2 mt8">
+            <button id="btnRegisterSave" class="btn btn-primary btn-lg">Gem kort</button>
+            <button id="btnRegisterCancel" class="btn btn-ghost btn-lg">Annullér</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="screenHistory" class="screen" aria-labelledby="historyHeading">
+        <h2 id="historyHeading" class="screen-title">Historik</h2>
+        <div class="panel">
+          <div id="historyTitle" class="panel-title">Transaktioner</div>
+          <div id="historyList" class="list"></div>
+          <div class="grid-2 mt8">
+            <button id="btnHistoryExportCsv" class="btn btn-secondary">Eksportér denne historik (CSV)</button>
+            <button id="btnHistoryBack" class="btn btn-ghost">Tilbage</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="screenSettings" class="screen" aria-labelledby="settingsHeading">
+        <h2 id="settingsHeading" class="screen-title">Indstillinger</h2>
+        <div class="panel">
+          <label class="label" for="settingsClubName">Klubnavn</label>
+          <input id="settingsClubName" class="input" type="text" placeholder="Sugekort Bar" maxlength="80" />
+          <label class="label mt8" for="settingsOperatorName">Operator navn</label>
+          <input id="settingsOperatorName" class="input" type="text" placeholder="Bartelefon" maxlength="80" />
+
+          <div class="panel-title mt8">Admin PIN (valgfrit)</div>
+          <div class="row gap wrap">
+            <input id="settingsPin" class="input" type="password" inputmode="numeric" placeholder="Ny PIN (min 4 cifre)" />
+            <button id="btnSavePin" class="btn btn-secondary">Gem PIN</button>
+            <button id="btnClearPin" class="btn btn-ghost">Fjern PIN</button>
+          </div>
+          <p class="tiny muted">PIN bruges til admin-handlinger (custom beløb, blokering).</p>
+
+          <div class="grid-2 mt8">
+            <button id="btnSaveSettings" class="btn btn-primary">Gem indstillinger</button>
+            <button id="btnSettingsBack" class="btn btn-ghost">Tilbage</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="Navigation">
+      <button id="navScan" class="nav-btn active">Scan</button>
+      <button id="navSettings" class="nav-btn">Indstillinger</button>
+    </nav>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="messageBar" class="message-bar hidden"></div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
