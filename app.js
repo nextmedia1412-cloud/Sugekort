@@ -58,7 +58,7 @@
       'btnExportJson', 'btnExportCsv', 'importJsonFile',
       'screenScan', 'screenMember', 'screenRegister', 'screenHistory', 'screenSettings',
       'memberName', 'memberStatus', 'memberBalance', 'memberCardId', 'memberUpdated',
-      'btnTopup100', 'btnDeduct10', 'btnDeduct25', 'btnDeduct50', 'btnShowHistory', 'btnBackToScan',
+      'btnTopup100', 'btnDeduct10', 'btnDeduct25', 'btnDeduct50', 'btnDeduct80', 'btnDeduct400', 'btnShowHistory', 'btnBackToScan',
       'adminPanel', 'adminAmountInput', 'btnAdminTopup', 'btnAdminDeduct', 'btnBlockUnblock', 'btnDeleteCard',
       'regScannedId', 'regSource', 'regGeneratedId', 'regHint', 'regMemberName', 'regActive', 'regWriteNdef',
       'btnRegisterSave', 'btnRegisterCancel',
@@ -83,9 +83,11 @@
 
     el.btnBackToScan.addEventListener('click', () => showScreen('screenScan'));
     el.btnTopup100.addEventListener('click', () => quickActionTopup(10000));
-    el.btnDeduct10.addEventListener('click', () => quickActionDeduct(1000));
-    el.btnDeduct25.addEventListener('click', () => quickActionDeduct(2000));
-    el.btnDeduct50.addEventListener('click', () => quickActionDeduct(3000));
+    el.btnDeduct10.addEventListener('click', () => quickActionDeduct(1000, 'Shot / Øl / Sodavand'));
+    el.btnDeduct25.addEventListener('click', () => quickActionDeduct(2000, 'Redbull / Shaker / Smirnoff'));
+    el.btnDeduct50.addEventListener('click', () => quickActionDeduct(3000, 'Drink'));
+    el.btnDeduct80.addEventListener('click', () => quickActionDeduct(8000, '10 shots'));
+    el.btnDeduct400.addEventListener('click', () => quickActionDeduct(40000, 'Flaske m. 6 vand'));
     el.btnShowHistory.addEventListener('click', showCurrentCardHistory);
     el.btnDeleteCard.addEventListener('click', deleteCurrentCardFromDatabase);
 
@@ -467,10 +469,17 @@
     el.btnBlockUnblock.textContent = card.status === 'blocked' ? 'Ophæv blokering' : 'Blokér kort';
 
     const isBlocked = card.status === 'blocked';
-    [el.btnTopup100, el.btnDeduct10, el.btnDeduct25, el.btnDeduct50].forEach(btn => btn.disabled = isBlocked);
-    el.btnAdminTopup.disabled = false;
-    el.btnAdminDeduct.disabled = false;
-  }
+[
+  el.btnTopup100,
+  el.btnDeduct10,
+  el.btnDeduct25,
+  el.btnDeduct50,
+  el.btnDeduct80,
+  el.btnDeduct400
+].filter(Boolean).forEach(btn => btn.disabled = isBlocked);
+
+el.btnAdminTopup.disabled = false;
+el.btnAdminDeduct.disabled = false;
 
   async function quickActionTopup(amountOre) {
     if (!state.currentCard) return;
@@ -486,19 +495,23 @@
     });
   }
 
-  async function quickActionDeduct(amountOre) {
-    if (!state.currentCard) return;
-    const ok = confirm(`Træk ${formatOre(amountOre)} fra ${state.currentCard.memberName}?`);
-    if (!ok) return;
-    await applyBalanceChange({
-      cardId: state.currentCard.cardId,
-      type: 'purchase',
-      deltaOre: -Math.abs(amountOre),
-      note: 'Quick purchase',
-      requireActiveCard: true,
-      adminMode: false,
-    });
-  }
+  async function quickActionDeduct(amountOre, productLabel = 'Køb') {
+  if (!state.currentCard) return;
+
+  const ok = confirm(
+    `Træk ${formatOre(amountOre)} (${productLabel}) fra ${state.currentCard.memberName}?`
+  );
+  if (!ok) return;
+
+  await applyBalanceChange({
+    cardId: state.currentCard.cardId,
+    type: 'purchase',
+    deltaOre: -Math.abs(amountOre),
+    note: `Køb · ${productLabel}`,
+    requireActiveCard: true,
+    adminMode: false,
+  });
+}
 
   async function adminCustomAction(mode) {
     if (!state.currentCard) return;
