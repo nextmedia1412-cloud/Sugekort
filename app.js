@@ -34,19 +34,20 @@
   document.addEventListener('DOMContentLoaded', init);
 
   async function init() {
-    bindElements();
-    bindEvents();
-    updateOnlineBadge();
-    updateNfcBadge();
-    window.addEventListener('online', updateOnlineBadge);
-    window.addEventListener('offline', updateOnlineBadge);
+  bindElements();
+  bindEvents();
+  updateOnlineBadge();
+  updateNfcBadge();
+  window.addEventListener('online', updateOnlineBadge);
+  window.addEventListener('offline', updateOnlineBadge);
 
-    try {
-      state.db = await openDatabase();
-      await ensureDefaultSettings();
-      await loadSettingsIntoState();
-      applySettingsToUI();
-          window.sugekortDev = {
+  try {
+    state.db = await openDatabase();
+    await ensureDefaultSettings();
+    await loadSettingsIntoState();
+    applySettingsToUI();
+
+    window.sugekortDev = {
       apiHealth: async () => {
         return await apiGetHealth();
       },
@@ -54,14 +55,195 @@
         return await apiPost('/card/get', { cardId });
       }
     };
-      showMessage('Database klar (IndexedDB). App virker lokalt/offline efter første load.', 'success', 2500);
-    } catch (err) {
-      console.error(err);
-      showMessage(`Databasefejl: ${err.message || err}`, 'error');
+
+    showMessage('Database klar (IndexedDB). App virker lokalt/offline efter første load.', 'success', 2500);
+  } catch (err) {
+    console.error(err);
+    showMessage(`Databasefejl: ${err.message || err}`, 'error');
+  }
+
+  registerServiceWorker();
+  setupInstallStateHints();
+}
+      // =========================
+  // V2 API wrappers + local cache sync helpers
+  // =========================
+
+  function splitServerCardGetPayload(serverCard) {
+    if (!serverCard) return { card: null, balance: null };
+
+    const {
+      balanceOre = 0,
+      balanceUpdatedAt = null,
+      ...cardRest
+    } = serverCard;
+
+    return {
+      card: cardRest,
+      balance: {
+        cardId: cardRest.cardId,
+        balanceOre: Number(balanceOre || 0),
+        updatedAt: balanceUpdatedAt || cardRest.updatedAt || new Date().toISOString()
+      }
+    };
+  }
+
+  function normalizeServerCardForLocalCache(card) {
+    return {
+      id: `srvcard:${card.cardId}`, // undgå key-collision med gamle lokale auto IDs
+      cardId: card.cardId,
+      memberName: card.memberName,
+      status: card.status,
+      createdAt: card.createdAt,
+      updatedAt: card.updatedAt
+    };
+  }
+
+  function normalizeServerTxForLocalCache(tx) {
+    const localId = tx?.id != null ? `srvtx:${tx.id}` : `srvtx:${generateUuidFallback()}`;
+    return {
+      id: localId,
+      timestamp: tx.timestamp,
+      cardId: tx.cardId,
+      type: tx.type,
+      amountOre: Number(tx.amountOre || 0),
+      balanceBeforeOre: Number(tx.balanceBeforeOre || 0),
+      balanceAfterOre: Number(tx.balanceAfterOre || 0),
+      operatorName: tx.operatorName || DEFAULT_SETTINGS.operatorName,
+      note: tx.note || undefined,
+
+      // gem evt. server-id til debugging/sync senere
+      serverId: tx.id ?? null,
+      clientTxId: tx.clientTxId ?? null
+    };
+  }
+
+  async function cacheServerCardAndBalance(serverCard, serverBalance = null) {
+    if (!serverCard?.cardId) return;
+
+    const localCard = normalizeServerCardForLocalCache(serverCard);
+
+    // hvis balance ikke blev sendt separat, prøv at bevare eksisterende lokal balance
+    let localBalance = null;
+    if (serverBalance && serverBalance.cardId) {
+      localBalance = {
+        cardId: serverBalance.cardId,
+        balanceOre: Number(serverBalance.balanceOre || 0),
+        updatedAt: serverBalance.updatedAt || new Date().toISOString()
+      };
     }
 
-    registerServiceWorker();
-    setupInstallStateHints();
+    await runDbTransaction(['cards', 'balances'], 'readwrite', async (stores) => {
+      // cards: find eksisterende record via cardId og ryd evt. gammel key (fx lokal auto-id)
+      const existing = await req(stores.cards.index('cardId').get(localCard.cardId));
+      if (existing && existing.id !== localCard.id) {
+        await req(stores.cards.delete(existing.id));
+      }
+
+      await req(stores.cards.put(localCard));
+
+      if (localBalance) {
+        await req(stores.balances.put(localBalance));
+      } else {
+        // behold eksisterende balance hvis serverkaldet ikke inkluderede balance
+        const existingBalance = await req(stores.balances.get(localCard.cardId));
+        if (!existingBalance) {
+          await req(stores.balances.put({
+            cardId: localCard.cardId,
+            balanceOre: 0,
+            updatedAt: localCard.updatedAt || new Date().toISOString()
+          }));
+        }
+      }
+    });
+  }
+
+  async function cacheServerTransaction(serverTx) {
+    if (!serverTx?.cardId) return;
+    const localTx = normalizeServerTxForLocalCache(serverTx);
+
+    await runDbTransaction(['transactions'], 'readwrite', async ({ transactions }) => {
+      await req(transactions.put(localTx));
+    });
+  }
+
+  async function cacheServerHistory(cardId, serverTransactions = []) {
+    await runDbTransaction(['transactions'], 'readwrite', async ({ transactions }) => {
+      // slet eksisterende historik for kortet
+      await new Promise((resolve, reject) => {
+        const index = transactions.index('cardId');
+        const cursorReq = index.openCursor(IDBKeyRange.only(cardId));
+        cursorReq.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        cursorReq.onerror = () => reject(cursorReq.error || new Error('Kunne ikke rydde historik-cache'));
+      });
+
+      // indsæt serverhistorik
+      for (const tx of serverTransactions) {
+        await req(transactions.put(normalizeServerTxForLocalCache(tx)));
+      }
+    });
+  }
+
+  async function cacheDeleteCardData(cardId) {
+    await runDbTransaction(['cards', 'balances', 'transactions'], 'readwrite', async (stores) => {
+      await req(stores.balances.delete(cardId));
+
+      const existing = await req(stores.cards.index('cardId').get(cardId));
+      if (existing && typeof existing.id !== 'undefined') {
+        await req(stores.cards.delete(existing.id));
+      }
+
+      await new Promise((resolve, reject) => {
+        const index = stores.transactions.index('cardId');
+        const cursorReq = index.openCursor(IDBKeyRange.only(cardId));
+        cursorReq.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        cursorReq.onerror = () => reject(cursorReq.error || new Error('Kunne ikke slette transaktioner'));
+      });
+    });
+  }
+
+  async function apiCardGetById(cardId) {
+    return await apiPost('/card/get', { cardId });
+  }
+
+  async function apiCardRegister({ cardId, memberName, status = 'active' }) {
+    return await apiPost('/card/register', { cardId, memberName, status });
+  }
+
+  async function apiCardHistory(cardId, limit = 500) {
+    return await apiPost('/card/history', { cardId, limit });
+  }
+
+  async function apiCardSetStatus(cardId, status) {
+    return await apiPost('/card/set-status', { cardId, status });
+  }
+
+  async function apiCardDelete(cardId) {
+    return await apiPost('/card/delete', { cardId });
+  }
+
+  async function apiTxTopup({ cardId, amountOre, note, operatorName, clientTxId }) {
+    return await apiPost('/tx/topup', { cardId, amountOre, note, operatorName, clientTxId });
+  }
+
+  async function apiTxPurchase({ cardId, amountOre, note, operatorName, clientTxId }) {
+    return await apiPost('/tx/purchase', { cardId, amountOre, note, operatorName, clientTxId });
   }
 
   function bindElements() {
@@ -330,10 +512,44 @@
     return out;
   }
 
-  async function handleScannedCard(scanInfo) {
+     async function handleScannedCard(scanInfo) {
     const cardId = scanInfo.cardId;
     setScanState('Kort læst', `ID: ${cardId}`, 'success');
 
+    // V2: server-first lookup hvis API er konfigureret
+    if (hasApiConfig()) {
+      try {
+        const resp = await apiCardGetById(cardId);
+
+        if (resp?.found && resp.card) {
+          const { card: serverCard, balance: serverBalance } = splitServerCardGetPayload(resp.card);
+          await cacheServerCardAndBalance(serverCard, serverBalance);
+
+          const cachedCard = await getCardByCardId(cardId);
+          if (cachedCard) {
+            await loadCardIntoMemberScreen(cachedCard);
+            showScreen('screenMember');
+            showMessage(`${cachedCard.memberName} fundet (server)`, 'success', 1500);
+            vibrateSuccess();
+            return;
+          }
+        }
+
+        // Ikke fundet på server -> normal registreringsflow
+        prepareRegistration(scanInfo);
+        showScreen('screenRegister');
+        showMessage('Kort ikke fundet. Opret nyt kort.', 'warn', 2200);
+        vibrateSuccess();
+        return;
+      } catch (err) {
+        console.error('API card/get fejl:', err);
+        showMessage(`Serveropslag fejlede: ${err.message || err}`, 'error', 3000);
+        vibrateError();
+        return; // strict online lookup når API er sat op
+      }
+    }
+
+    // Fallback: lokal-only (gammel adfærd)
     const card = await getCardByCardId(cardId);
     if (card) {
       await loadCardIntoMemberScreen(card);
@@ -350,113 +566,161 @@
   }
 
   function prepareRegistration(scanInfo) {
-    const generatedId = crypto.randomUUID ? crypto.randomUUID() : generateUuidFallback();
-    state.pendingRegistration = {
-      scanInfo,
-      generatedId,
-    };
+  const generatedId = crypto.randomUUID ? crypto.randomUUID() : generateUuidFallback();
+  state.pendingRegistration = {
+    scanInfo,
+    generatedId,
+  };
 
-    el.regScannedId.textContent = scanInfo.cardId || 'Ukendt';
-    el.regSource.textContent = formatSourceLabel(scanInfo.source);
-    el.regGeneratedId.textContent = generatedId;
-    el.regMemberName.value = '';
-    el.regActive.checked = true;
-    el.regWriteNdef.checked = scanInfo.source !== 'ndef-text';
-    el.regWriteNdef.disabled = scanInfo.source === 'ndef-text';
-    el.regMemberName.focus();
-    refreshRegistrationPreview();
-  }
+  el.regScannedId.textContent = scanInfo.cardId || 'Ukendt';
+  el.regSource.textContent = formatSourceLabel(scanInfo.source);
+  el.regGeneratedId.textContent = generatedId;
+  el.regMemberName.value = '';
+  el.regActive.checked = true;
+  el.regWriteNdef.checked = scanInfo.source !== 'ndef-text';
+  el.regWriteNdef.disabled = scanInfo.source === 'ndef-text';
+  el.regMemberName.focus();
+  refreshRegistrationPreview();
+}
 
   function formatSourceLabel(source) {
-    switch (source) {
-      case 'ndef-text': return 'NDEF tekst (anbefalet)';
-      case 'serial-fallback': return 'Serienummer fallback';
-      default: return source || 'Ukendt';
-    }
+  switch (source) {
+    case 'ndef-text': return 'NDEF tekst (anbefalet)';
+    case 'serial-fallback': return 'Serienummer fallback';
+    default: return source || 'Ukendt';
+  }
+}
+
+function refreshRegistrationPreview() {
+  const pending = state.pendingRegistration;
+  if (!pending) return;
+
+  const { scanInfo, generatedId } = pending;
+  const shouldWrite = !!el.regWriteNdef.checked && scanInfo.source !== 'ndef-text';
+
+  const finalCardId = scanInfo.source === 'ndef-text'
+    ? scanInfo.cardId
+    : (shouldWrite ? generatedId : scanInfo.cardId);
+
+  let hint = `Kortet vil blive gemt med ID: ${finalCardId}. `;
+  if (scanInfo.source === 'ndef-text') {
+    hint += 'Kortet har allerede et NDEF tekst-ID.';
+  } else if (shouldWrite) {
+    hint += 'Du skal holde kortet til telefonen igen, så appen kan skrive nyt NDEF-ID.';
+  } else {
+    hint += 'Bemærk: du bruger serienummer-fallback. Det virker ofte, men NDEF-ID er mere robust til denne app.';
   }
 
-  function refreshRegistrationPreview() {
-    const pending = state.pendingRegistration;
-    if (!pending) return;
-    const { scanInfo, generatedId } = pending;
-    const shouldWrite = !!el.regWriteNdef.checked && scanInfo.source !== 'ndef-text';
-    const finalCardId = scanInfo.source === 'ndef-text'
-      ? scanInfo.cardId
-      : (shouldWrite ? generatedId : scanInfo.cardId);
+  el.regHint.textContent = hint;
+}
 
-    let hint = `Kortet vil blive gemt med ID: ${finalCardId}. `;
-    if (scanInfo.source === 'ndef-text') {
-      hint += 'Kortet har allerede et NDEF tekst-ID.';
-    } else if (shouldWrite) {
-      hint += 'Du skal holde kortet til telefonen igen, så appen kan skrive nyt NDEF-ID.';
-    } else {
-      hint += 'Bemærk: du bruger serienummer-fallback. Det virker ofte, men NDEF-ID er mere robust til denne app.';
-    }
-
-    el.regHint.textContent = hint;
+async function saveNewCardRegistration() {
+  if (!state.pendingRegistration) {
+    showMessage('Ingen registrering i gang.', 'error');
+    return;
   }
 
-  async function saveNewCardRegistration() {
-    if (!state.pendingRegistration) {
-      showMessage('Ingen registrering i gang.', 'error');
-      return;
-    }
-    const memberName = el.regMemberName.value.trim();
-    if (!memberName) {
-      showMessage('Skriv medlemsnavn først.', 'error');
-      el.regMemberName.focus();
-      return;
-    }
+  const memberName = el.regMemberName.value.trim();
+  if (!memberName) {
+    showMessage('Skriv medlemsnavn først.', 'error');
+    el.regMemberName.focus();
+    return;
+  }
 
-    const { scanInfo, generatedId } = state.pendingRegistration;
-    const active = el.regActive.checked;
-    const writeNdef = !!el.regWriteNdef.checked && scanInfo.source !== 'ndef-text';
-    let finalCardId = scanInfo.cardId;
+  const { scanInfo, generatedId } = state.pendingRegistration;
+  const active = el.regActive.checked;
+  const writeNdef = !!el.regWriteNdef.checked && scanInfo.source !== 'ndef-text';
+  let finalCardId = scanInfo.cardId;
 
-    if (writeNdef) {
-      finalCardId = generatedId;
-      try {
-        await writeCardIdToNdef(finalCardId);
-        showToast('NDEF-ID skrevet til kort');
-      } catch (err) {
-        console.error(err);
-        showMessage(`Kunne ikke skrive NDEF-ID: ${err.message || err}`, 'error');
-        return;
-      }
-    }
-
+  if (writeNdef) {
+    finalCardId = generatedId;
     try {
-      const existing = await getCardByCardId(finalCardId);
-      if (existing) {
-        showMessage('Kort-ID findes allerede i databasen.', 'error');
-        return;
-      }
+      await writeCardIdToNdef(finalCardId);
+      showToast('NDEF-ID skrevet til kort');
+    } catch (err) {
+      console.error(err);
+      showMessage(`Kunne ikke skrive NDEF-ID: ${err.message || err}`, 'error');
+      return;
+    }
+  }
 
-      const now = new Date().toISOString();
-      const cardData = {
+  // V2: server-first register hvis API er konfigureret
+  if (hasApiConfig()) {
+    try {
+      const resp = await apiCardRegister({
         cardId: finalCardId,
         memberName,
-        status: active ? 'active' : 'blocked',
-        createdAt: now,
-        updatedAt: now,
-      };
-      await createCardWithBalance(cardData, 0);
+        status: active ? 'active' : 'blocked'
+      });
+
+      if (!resp?.ok || !resp.card) {
+        throw new Error('Ugyldigt svar fra server');
+      }
+
+      await cacheServerCardAndBalance(resp.card, resp.balance || null);
+
       state.pendingRegistration = null;
       setScanState('Kort oprettet', `${memberName} blev oprettet`, 'success');
       showMessage('Kort oprettet ✅', 'success', 1800);
-      const card = await getCardByCardId(finalCardId);
-      if (card) {
-        await loadCardIntoMemberScreen(card);
+
+      const cachedCard = await getCardByCardId(finalCardId);
+      if (cachedCard) {
+        await loadCardIntoMemberScreen(cachedCard);
         showScreen('screenMember');
       } else {
         showScreen('screenScan');
       }
+
       vibrateSuccess();
+      return;
     } catch (err) {
-      console.error(err);
-      showMessage(`Kunne ikke gemme kort: ${err.message || err}`, 'error');
+      console.error('API card/register fejl:', err);
+      if (err.status === 409) {
+        showMessage('Kort-ID findes allerede i fælles database.', 'error');
+      } else {
+        showMessage(`Kunne ikke gemme kort på server: ${err.message || err}`, 'error');
+      }
+      return;
     }
   }
+
+  // Fallback: lokal-only (gammel adfærd)
+  try {
+    const existing = await getCardByCardId(finalCardId);
+    if (existing) {
+      showMessage('Kort-ID findes allerede i databasen.', 'error');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const cardData = {
+      cardId: finalCardId,
+      memberName,
+      status: active ? 'active' : 'blocked',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await createCardWithBalance(cardData, 0);
+
+    state.pendingRegistration = null;
+    setScanState('Kort oprettet', `${memberName} blev oprettet`, 'success');
+    showMessage('Kort oprettet ✅', 'success', 1800);
+
+    const card = await getCardByCardId(finalCardId);
+    if (card) {
+      await loadCardIntoMemberScreen(card);
+      showScreen('screenMember');
+    } else {
+      showScreen('screenScan');
+    }
+
+    vibrateSuccess();
+  } catch (err) {
+    console.error(err);
+    showMessage(`Kunne ikke gemme kort: ${err.message || err}`, 'error');
+  }
+}
 
   async function writeCardIdToNdef(cardId) {
     if (!('NDEFReader' in window)) {
@@ -554,8 +818,9 @@ el.btnAdminDeduct.disabled = false;
     });
   }
 
-  async function toggleBlockCurrentCard() {
+    async function toggleBlockCurrentCard() {
     if (!state.currentCard) return;
+
     const passed = await ensureAdminAccess();
     if (!passed) return;
 
@@ -563,6 +828,32 @@ el.btnAdminDeduct.disabled = false;
     const ok = confirm(`${targetStatus === 'blocked' ? 'Blokér' : 'Ophæv blokering af'} kort for ${state.currentCard.memberName}?`);
     if (!ok) return;
 
+    if (hasApiConfig()) {
+      try {
+        const resp = await apiCardSetStatus(state.currentCard.cardId, targetStatus);
+        if (!resp?.card) throw new Error('Ugyldigt svar fra server');
+
+        // bevar lokal balance-cache, opdatér card fra server
+        await cacheServerCardAndBalance(resp.card, {
+          cardId: state.currentCard.cardId,
+          balanceOre: state.currentBalanceOre ?? 0,
+          updatedAt: new Date().toISOString()
+        });
+
+        const freshCard = await getCardByCardId(state.currentCard.cardId);
+        if (freshCard) await loadCardIntoMemberScreen(freshCard);
+
+        showMessage(`Kort ${targetStatus === 'blocked' ? 'blokeret' : 'genaktiveret'}.`, 'success', 1800);
+        vibrateSuccess();
+      } catch (err) {
+        console.error(err);
+        showMessage(`Kunne ikke opdatere kortstatus på server: ${err.message || err}`, 'error');
+        vibrateError();
+      }
+      return;
+    }
+
+    // Fallback: lokal-only
     try {
       state.currentCard.status = targetStatus;
       state.currentCard.updatedAt = new Date().toISOString();
@@ -577,166 +868,295 @@ el.btnAdminDeduct.disabled = false;
     }
   }
 
-  async function deleteCurrentCardFromDatabase() {
-  if (!state.currentCard) {
-    showMessage('Intet kort valgt.', 'error');
-    return;
-  }
+    async function deleteCurrentCardFromDatabase() {
+    if (!state.currentCard) {
+      showMessage('Intet kort valgt.', 'error');
+      return;
+    }
 
-  // Optional: kræv admin PIN (anbefalet)
-  const passed = await ensureAdminAccess();
-  if (!passed) return;
+    const passed = await ensureAdminAccess();
+    if (!passed) return;
 
-  const card = state.currentCard;
-  const balanceOre = state.currentBalanceOre ?? 0;
+    const card = state.currentCard;
+    const balanceOre = state.currentBalanceOre ?? 0;
 
-  const ok = confirm(
-    `Slet kort fra database?\n\n` +
-    `Navn: ${card.memberName}\n` +
-    `Kort ID: ${card.cardId}\n` +
-    `Saldo: ${formatOre(balanceOre)}\n\n` +
-    `Dette sletter kort, saldo og AL historik permanent på denne telefon.`
-  );
-  if (!ok) return;
+    const isServerMode = hasApiConfig();
+    const ok = confirm(
+      `Slet kort fra database?\n\n` +
+      `Navn: ${card.memberName}\n` +
+      `Kort ID: ${card.cardId}\n` +
+      `Saldo: ${formatOre(balanceOre)}\n\n` +
+      (isServerMode
+        ? `Dette sletter kort, saldo og AL historik i FÆLLES database (alle enheder).`
+        : `Dette sletter kort, saldo og AL historik permanent på denne telefon.`)
+    );
+    if (!ok) return;
 
-  try {
-    await runDbTransaction(['cards', 'balances', 'transactions'], 'readwrite', async (stores) => {
-      // Slet balance (balances keyPath = cardId)
-      await req(stores.balances.delete(card.cardId));
+    if (isServerMode) {
+      try {
+        await apiCardDelete(card.cardId);
+        await cacheDeleteCardData(card.cardId);
 
-      // Slet kort (cards keyPath = intern auto id)
-      if (typeof card.id !== 'undefined' && card.id !== null) {
-        await req(stores.cards.delete(card.id));
-      } else {
-        // fallback hvis currentCard mod forventning mangler intern id
-        const existing = await req(stores.cards.index('cardId').get(card.cardId));
-        if (existing && typeof existing.id !== 'undefined') {
-          await req(stores.cards.delete(existing.id));
-        }
-      }
+        state.currentCard = null;
+        state.currentBalanceOre = 0;
 
-      // Slet alle transaktioner for kortet (transactions index = 'cardId')
-      await new Promise((resolve, reject) => {
-        const index = stores.transactions.index('cardId');
-        const cursorReq = index.openCursor(IDBKeyRange.only(card.cardId));
-
-        cursorReq.onsuccess = (e) => {
-          const cursor = e.target.result;
-          if (cursor) {
-            cursor.delete();
-            cursor.continue();
-          } else {
-            resolve();
-          }
-        };
-
-        cursorReq.onerror = () => {
-          reject(cursorReq.error || new Error('Kunne ikke slette transaktioner'));
-        };
-      });
-    });
-
-    // Ryd state + UI
-    state.currentCard = null;
-    state.currentBalanceOre = 0;
-
-    setScanState('Kort slettet', 'Kortet og tilknyttet data er slettet fra databasen.', 'success');
-    showScreen('screenScan');
-    showMessage('Kort slettet fra database ✅', 'success', 2200);
-    vibrateSuccess();
-
-    // (Valgfrit) ryd manuel søgeresultatliste
-    // renderManualResults([]);
-
-  } catch (err) {
-    console.error(err);
-    showMessage(`Kunne ikke slette kort: ${err.message || err}`, 'error');
-    vibrateError();
-  }
-}
-
-  async function applyBalanceChange({ cardId, type, deltaOre, note = '', requireActiveCard = true, adminMode = false }) {
-    try {
-      const card = await getCardByCardId(cardId);
-      if (!card) throw new Error('Kort findes ikke');
-      if (requireActiveCard && card.status === 'blocked') {
-        showMessage('Kortet er blokeret.', 'error');
+        setScanState('Kort slettet', 'Kortet og tilknyttet data er slettet fra fælles database.', 'success');
+        showScreen('screenScan');
+        showMessage('Kort slettet fra fælles database ✅', 'success', 2200);
+        vibrateSuccess();
+      } catch (err) {
+        console.error(err);
+        showMessage(`Kunne ikke slette kort på server: ${err.message || err}`, 'error');
         vibrateError();
-        return;
       }
+      return;
+    }
 
-      const result = await runDbTransaction(['balances', 'transactions', 'cards', 'settings'], 'readwrite', async (stores) => {
-        const balanceRecord = await req(stores.balances.get(cardId));
-        const before = balanceRecord?.balanceOre ?? 0;
-        const after = before + deltaOre;
+    // Fallback: lokal-only
+    try {
+      await runDbTransaction(['cards', 'balances', 'transactions'], 'readwrite', async (stores) => {
+        await req(stores.balances.delete(card.cardId));
 
-        if (!adminMode && after < 0) {
-          const err = new Error('Insufficient balance');
-          err.code = 'INSUFFICIENT_BALANCE';
-          err.beforeOre = before;
-          throw err;
+        if (typeof card.id !== 'undefined' && card.id !== null) {
+          await req(stores.cards.delete(card.id));
+        } else {
+          const existing = await req(stores.cards.index('cardId').get(card.cardId));
+          if (existing && typeof existing.id !== 'undefined') {
+            await req(stores.cards.delete(existing.id));
+          }
         }
 
-        const now = new Date().toISOString();
-        const updatedBalance = { cardId, balanceOre: after, updatedAt: now };
-        await req(stores.balances.put(updatedBalance));
+        await new Promise((resolve, reject) => {
+          const index = stores.transactions.index('cardId');
+          const cursorReq = index.openCursor(IDBKeyRange.only(card.cardId));
 
-        card.updatedAt = now;
-        await req(stores.cards.put(card));
+          cursorReq.onsuccess = (e) => {
+            const cursor = e.target.result;
+            if (cursor) {
+              cursor.delete();
+              cursor.continue();
+            } else {
+              resolve();
+            }
+          };
 
-        const operatorName = await readSettingFromStore(stores.settings, 'operatorName', DEFAULT_SETTINGS.operatorName);
-        const tx = {
-          timestamp: now,
-          cardId,
-          type,
-          amountOre: Math.abs(deltaOre),
-          balanceBeforeOre: before,
-          balanceAfterOre: after,
-          operatorName,
-          note: note || undefined,
-        };
-        await req(stores.transactions.add(tx));
-
-        return { beforeOre: before, afterOre: after, tx };
+          cursorReq.onerror = () => {
+            reject(cursorReq.error || new Error('Kunne ikke slette transaktioner'));
+          };
+        });
       });
 
-      if (state.currentCard && state.currentCard.cardId === cardId) {
-        const freshCard = await getCardByCardId(cardId);
-        await loadCardIntoMemberScreen(freshCard);
-      }
+      state.currentCard = null;
+      state.currentBalanceOre = 0;
 
-      const isPositive = deltaOre >= 0;
-      showMessage(
-        `${isPositive ? 'Top-up/justering gennemført' : 'Træk gennemført'} · Ny saldo: ${formatOre(result.afterOre)}`,
-        'success',
-        2200
-      );
-      setScanState('Handling gennemført', `${card.memberName}: ${formatOre(result.afterOre)}`, 'success');
-      showToast(`${isPositive ? '+' : '-'} ${formatOre(Math.abs(deltaOre))}`);
+      setScanState('Kort slettet', 'Kortet og tilknyttet data er slettet fra databasen.', 'success');
+      showScreen('screenScan');
+      showMessage('Kort slettet fra database ✅', 'success', 2200);
       vibrateSuccess();
     } catch (err) {
       console.error(err);
-      if (err.code === 'INSUFFICIENT_BALANCE') {
-        showMessage(`Ikke nok saldo. Aktuel saldo: ${formatOre(err.beforeOre ?? 0)}`, 'error');
-      } else {
-        showMessage(`Databasefejl ved saldoændring: ${err.message || err}`, 'error');
-      }
+      showMessage(`Kunne ikke slette kort: ${err.message || err}`, 'error');
       vibrateError();
     }
   }
 
-  async function showCurrentCardHistory() {
-    if (!state.currentCard) return;
+    async function applyBalanceChange({ cardId, type, deltaOre, note = '', requireActiveCard = true, adminMode = false }) {
+  // V2: server-first hvis API er konfigureret
+  if (hasApiConfig()) {
     try {
-      const txs = await getTransactionsForCard(state.currentCard.cardId);
-      el.historyTitle.textContent = `Historik · ${state.currentCard.memberName}`;
-      renderHistoryList(txs);
-      showScreen('screenHistory');
+      const amountOre = Math.abs(Number(deltaOre || 0));
+      if (!Number.isInteger(amountOre) || amountOre <= 0) {
+        showMessage('Ugyldigt beløb.', 'error');
+        vibrateError();
+        return;
+      }
+
+      const operatorName = state.settings.operatorName || DEFAULT_SETTINGS.operatorName;
+      const clientTxId = crypto.randomUUID ? crypto.randomUUID() : generateUuidFallback();
+
+      const isPositive = deltaOre >= 0;
+      let result;
+
+      // Backend har ikke separat "adjustment"-endpoint endnu.
+      // Admin justeringer mappes derfor til topup/purchase med note.
+      if (isPositive) {
+        result = await apiTxTopup({
+          cardId,
+          amountOre,
+          note,
+          operatorName,
+          clientTxId
+        });
+      } else {
+        result = await apiTxPurchase({
+          cardId,
+          amountOre,
+          note,
+          operatorName,
+          clientTxId
+        });
+      }
+
+      // Cache server-resultat
+      if (result?.card) {
+        await cacheServerCardAndBalance(result.card, result.balance || null);
+      } else {
+        // fx duplicate reply uden card/balance -> hent aktuel state
+        const lookup = await apiCardGetById(cardId);
+        if (lookup?.found && lookup.card) {
+          const split = splitServerCardGetPayload(lookup.card);
+          await cacheServerCardAndBalance(split.card, split.balance);
+        }
+      }
+
+      if (result?.transaction) {
+        await cacheServerTransaction(result.transaction);
+      }
+
+      if (state.currentCard && state.currentCard.cardId === cardId) {
+        const freshCard = await getCardByCardId(cardId);
+        if (freshCard) {
+          await loadCardIntoMemberScreen(freshCard);
+        }
+      }
+
+      const afterOre =
+        result?.balance?.balanceOre ??
+        result?.transaction?.balanceAfterOre ??
+        (await getBalanceByCardId(cardId))?.balanceOre ??
+        0;
+
+      const cardForName = await getCardByCardId(cardId);
+      const memberName = cardForName?.memberName || cardId;
+
+      showMessage(
+        `${isPositive ? 'Top-up/justering gennemført' : 'Træk gennemført'} · Ny saldo: ${formatOre(afterOre)}`,
+        'success',
+        2200
+      );
+      setScanState('Handling gennemført', `${memberName}: ${formatOre(afterOre)}`, 'success');
+      showToast(`${isPositive ? '+' : '-'} ${formatOre(amountOre)}`);
+      vibrateSuccess();
+      return;
     } catch (err) {
-      console.error(err);
-      showMessage(`Kunne ikke hente historik: ${err.message || err}`, 'error');
+      console.error('API saldoændring fejl:', err);
+      const payload = err?.payload || {};
+
+      if (payload?.code === 'INSUFFICIENT_BALANCE') {
+        showMessage(`Ikke nok saldo. Aktuel saldo: ${formatOre(payload.beforeOre ?? 0)}`, 'error');
+      } else if (payload?.code === 'CARD_BLOCKED') {
+        showMessage('Kortet er blokeret.', 'error');
+      } else {
+        showMessage(`Serverfejl ved saldoændring: ${err.message || err}`, 'error');
+      }
+      vibrateError();
+      return;
     }
   }
+
+  // Fallback: lokal-only (gammel adfærd)
+  try {
+    const card = await getCardByCardId(cardId);
+    if (!card) throw new Error('Kort findes ikke');
+    if (requireActiveCard && card.status === 'blocked') {
+      showMessage('Kortet er blokeret.', 'error');
+      vibrateError();
+      return;
+    }
+
+    const result = await runDbTransaction(['balances', 'transactions', 'cards', 'settings'], 'readwrite', async (stores) => {
+      const balanceRecord = await req(stores.balances.get(cardId));
+      const before = balanceRecord?.balanceOre ?? 0;
+      const after = before + deltaOre;
+
+      if (!adminMode && after < 0) {
+        const err = new Error('Insufficient balance');
+        err.code = 'INSUFFICIENT_BALANCE';
+        err.beforeOre = before;
+        throw err;
+      }
+
+      const now = new Date().toISOString();
+      const updatedBalance = { cardId, balanceOre: after, updatedAt: now };
+      await req(stores.balances.put(updatedBalance));
+
+      card.updatedAt = now;
+      await req(stores.cards.put(card));
+
+      const operatorName = await readSettingFromStore(stores.settings, 'operatorName', DEFAULT_SETTINGS.operatorName);
+      const tx = {
+        timestamp: now,
+        cardId,
+        type,
+        amountOre: Math.abs(deltaOre),
+        balanceBeforeOre: before,
+        balanceAfterOre: after,
+        operatorName,
+        note: note || undefined,
+      };
+      await req(stores.transactions.add(tx));
+
+      return { beforeOre: before, afterOre: after, tx };
+    });
+
+    if (state.currentCard && state.currentCard.cardId === cardId) {
+      const freshCard = await getCardByCardId(cardId);
+      await loadCardIntoMemberScreen(freshCard);
+    }
+
+    const isPositive = deltaOre >= 0;
+    showMessage(
+      `${isPositive ? 'Top-up/justering gennemført' : 'Træk gennemført'} · Ny saldo: ${formatOre(result.afterOre)}`,
+      'success',
+      2200
+    );
+    setScanState('Handling gennemført', `${card.memberName}: ${formatOre(result.afterOre)}`, 'success');
+    showToast(`${isPositive ? '+' : '-'} ${formatOre(Math.abs(deltaOre))}`);
+    vibrateSuccess();
+  } catch (err) {
+    console.error(err);
+    if (err.code === 'INSUFFICIENT_BALANCE') {
+      showMessage(`Ikke nok saldo. Aktuel saldo: ${formatOre(err.beforeOre ?? 0)}`, 'error');
+    } else {
+      showMessage(`Databasefejl ved saldoændring: ${err.message || err}`, 'error');
+    }
+    vibrateError();
+  }
+}
+
+async function showCurrentCardHistory() {
+  if (!state.currentCard) return;
+
+  if (hasApiConfig()) {
+    try {
+      const resp = await apiCardHistory(state.currentCard.cardId);
+      const txs = Array.isArray(resp?.transactions) ? resp.transactions : [];
+
+      // cache til lokal DB, så resten af appen stadig kan bruge samme struktur
+      await cacheServerHistory(state.currentCard.cardId, txs);
+
+      el.historyTitle.textContent = `Historik · ${state.currentCard.memberName}`;
+      renderHistoryList(txs); // render direkte fra server-shape (matcher allerede)
+      showScreen('screenHistory');
+      return;
+    } catch (err) {
+      console.error('API card/history fejl:', err);
+      showMessage(`Kunne ikke hente historik fra server: ${err.message || err}`, 'error');
+      return;
+    }
+  }
+
+  // Fallback: lokal-only
+  try {
+    const txs = await getTransactionsForCard(state.currentCard.cardId);
+    el.historyTitle.textContent = `Historik · ${state.currentCard.memberName}`;
+    renderHistoryList(txs);
+    showScreen('screenHistory');
+  } catch (err) {
+    console.error(err);
+    showMessage(`Kunne ikke hente historik: ${err.message || err}`, 'error');
+  }
+}
 
   function renderHistoryList(txs) {
     el.historyList.innerHTML = '';
