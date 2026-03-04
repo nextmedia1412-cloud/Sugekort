@@ -76,7 +76,7 @@
       'regScannedId', 'regSource', 'regGeneratedId', 'regHint', 'regMemberName', 'regActive', 'regWriteNdef',
       'btnRegisterSave', 'btnRegisterCancel',
       'historyTitle', 'historyList', 'btnHistoryExportCsv', 'btnHistoryBack',
-      'settingsClubName', 'settingsOperatorName', 'settingsApiBaseUrl', 'settingsApiPin', 'settingsPin', 'btnSavePin', 'btnClearPin', 'btnSaveSettings', 'btnSettingsBack',
+      'settingsClubName', 'settingsOperatorName', 'settingsApiBaseUrl', 'settingsApiPin', 'settingsPin', 'btnSavePin', 'btnClearPin', 'btnSaveSettings', 'btnSettingsBack', 'btnTestApi',
       'navScan', 'navSettings', 'toast', 'messageBar'
     ];
     for (const id of ids) el[id] = document.getElementById(id);
@@ -824,6 +824,24 @@ el.btnAdminDeduct.disabled = false;
   } catch (err) {
     console.error(err);
     showMessage(`Kunne ikke gemme indstillinger: ${err.message || err}`, 'error');
+  }
+}
+
+  async function onTestApiConnection() {
+  try {
+    if (!hasApiConfig()) {
+      showMessage('Mangler API base URL eller API PIN i indstillinger.', 'error');
+      return;
+    }
+
+    const health = await apiGetHealth();
+    showMessage(`API OK ✅ DB: ${health.db}`, 'success', 2200);
+    showToast('API forbindelse virker', 'success');
+    vibrateSuccess();
+  } catch (err) {
+    console.error(err);
+    showMessage(`API test fejlede: ${err.message || err}`, 'error', 3500);
+    vibrateError();
   }
 }
 
