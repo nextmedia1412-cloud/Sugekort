@@ -1,6 +1,9 @@
 (() => {
   'use strict';
 
+  const DB_NAME = 'sugekort_bar_local';
+  const DB_VERSION = 1;
+
   const DEFAULT_SETTINGS = {
   clubName: 'Sugekort Bar',
   currency: 'DKK',
