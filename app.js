@@ -1070,6 +1070,76 @@ el.btnAdminDeduct.disabled = false;
     return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
+    function getApiConfig() {
+    const baseUrl = String(state.settings.apiBaseUrl || '').trim().replace(/\/+$/, '');
+    const apiPin = String(state.settings.apiPin || '').trim();
+    return { baseUrl, apiPin };
+  }
+
+  function hasApiConfig() {
+    const { baseUrl, apiPin } = getApiConfig();
+    return !!baseUrl && !!apiPin;
+  }
+
+  async function apiPost(path, body) {
+    const { baseUrl, apiPin } = getApiConfig();
+
+    if (!baseUrl) throw new Error('API base URL mangler');
+    if (!apiPin) throw new Error('API PIN mangler');
+
+    const url = `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Bar-Pin': apiPin
+      },
+      body: JSON.stringify(body ?? {})
+    });
+
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      // ignore non-json
+    }
+
+    if (!res.ok) {
+      const err = new Error(data?.error || `API fejl (${res.status})`);
+      err.status = res.status;
+      err.payload = data;
+      throw err;
+    }
+
+    return data;
+  }
+
+  async function apiGetHealth() {
+    const { baseUrl } = getApiConfig();
+
+    if (!baseUrl) throw new Error('API base URL mangler');
+
+    const url = `${baseUrl}/health`;
+    const res = await fetch(url, { method: 'GET' });
+
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      // ignore non-json
+    }
+
+    if (!res.ok) {
+      const err = new Error(data?.error || `Health fejl (${res.status})`);
+      err.status = res.status;
+      err.payload = data;
+      throw err;
+    }
+
+    return data;
+  }
+  
   function setupInstallStateHints() {
     // Not critical for MVP; keep simple. We only expose offline/installed behavior via manifest + SW.
     window.addEventListener('appinstalled', () => {
