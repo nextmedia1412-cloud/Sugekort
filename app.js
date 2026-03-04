@@ -46,6 +46,14 @@
       await ensureDefaultSettings();
       await loadSettingsIntoState();
       applySettingsToUI();
+          window.sugekortDev = {
+      apiHealth: async () => {
+        return await apiGetHealth();
+      },
+      apiCardGet: async (cardId) => {
+        return await apiPost('/card/get', { cardId });
+      }
+    };
       showMessage('Database klar (IndexedDB). App virker lokalt/offline efter første load.', 'success', 2500);
     } catch (err) {
       console.error(err);
