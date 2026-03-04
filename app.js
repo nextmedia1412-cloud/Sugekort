@@ -132,6 +132,7 @@
     el.btnSettingsBack.addEventListener('click', () => showScreen('screenScan'));
     el.btnSavePin.addEventListener('click', saveAdminPin);
     el.btnClearPin.addEventListener('click', clearAdminPin);
+    el.btnTestApi.addEventListener('click', onTestApiConnection);
   }
 
   function showScreen(screenId) {
