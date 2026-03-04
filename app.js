@@ -65,7 +65,7 @@
       'regScannedId', 'regSource', 'regGeneratedId', 'regHint', 'regMemberName', 'regActive', 'regWriteNdef',
       'btnRegisterSave', 'btnRegisterCancel',
       'historyTitle', 'historyList', 'btnHistoryExportCsv', 'btnHistoryBack',
-      'settingsClubName', 'settingsOperatorName', 'settingsPin', 'btnSavePin', 'btnClearPin', 'btnSaveSettings', 'btnSettingsBack',
+      'settingsClubName', 'settingsOperatorName', 'settingsApiBaseUrl', 'settingsApiPin', 'settingsPin', 'btnSavePin', 'btnClearPin', 'btnSaveSettings', 'btnSettingsBack',
       'navScan', 'navSettings', 'toast', 'messageBar'
     ];
     for (const id of ids) el[id] = document.getElementById(id);
