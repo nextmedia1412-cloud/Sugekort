@@ -1,14 +1,16 @@
 (() => {
   'use strict';
 
-  const DB_NAME = 'sugekort_bar_local';
-  const DB_VERSION = 1;
   const DEFAULT_SETTINGS = {
-    clubName: 'Sugekort Bar',
-    currency: 'DKK',
-    operatorName: 'Bartelefon',
-    adminPinHash: null,
-  };
+  clubName: 'Sugekort Bar',
+  currency: 'DKK',
+  operatorName: 'Bartelefon',
+  adminPinHash: null,
+
+  // V2 backend (holdes adskilt fra admin PIN)
+  apiBaseUrl: '',
+  apiPin: ''
+};
 
   const state = {
     db: null,
