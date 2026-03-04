@@ -795,19 +795,26 @@ el.btnAdminDeduct.disabled = false;
   }
 
   async function saveSettings() {
-    try {
-      const clubName = el.settingsClubName.value.trim() || DEFAULT_SETTINGS.clubName;
-      const operatorName = el.settingsOperatorName.value.trim() || DEFAULT_SETTINGS.operatorName;
-      await setSetting('clubName', clubName);
-      await setSetting('operatorName', operatorName);
-      await loadSettingsIntoState();
-      applySettingsToUI();
-      showMessage('Indstillinger gemt.', 'success', 1500);
-    } catch (err) {
-      console.error(err);
-      showMessage(`Kunne ikke gemme indstillinger: ${err.message || err}`, 'error');
-    }
+  try {
+    const clubName = el.settingsClubName.value.trim() || DEFAULT_SETTINGS.clubName;
+    const operatorName = el.settingsOperatorName.value.trim() || DEFAULT_SETTINGS.operatorName;
+
+    const apiBaseUrl = el.settingsApiBaseUrl.value.trim();
+    const apiPin = el.settingsApiPin.value.trim();
+
+    await setSetting('clubName', clubName);
+    await setSetting('operatorName', operatorName);
+    await setSetting('apiBaseUrl', apiBaseUrl);
+    await setSetting('apiPin', apiPin);
+
+    await loadSettingsIntoState();
+    applySettingsToUI();
+    showMessage('Indstillinger gemt.', 'success', 1500);
+  } catch (err) {
+    console.error(err);
+    showMessage(`Kunne ikke gemme indstillinger: ${err.message || err}`, 'error');
   }
+}
 
   async function saveAdminPin() {
     const pin = el.settingsPin.value.trim();
@@ -855,10 +862,13 @@ el.btnAdminDeduct.disabled = false;
   }
 
   function applySettingsToUI() {
-    el.clubTitle.textContent = state.settings.clubName || DEFAULT_SETTINGS.clubName;
-    el.settingsClubName.value = state.settings.clubName || DEFAULT_SETTINGS.clubName;
-    el.settingsOperatorName.value = state.settings.operatorName || DEFAULT_SETTINGS.operatorName;
-  }
+  el.clubTitle.textContent = state.settings.clubName || DEFAULT_SETTINGS.clubName;
+  el.settingsClubName.value = state.settings.clubName || DEFAULT_SETTINGS.clubName;
+  el.settingsOperatorName.value = state.settings.operatorName || DEFAULT_SETTINGS.operatorName;
+
+  el.settingsApiBaseUrl.value = state.settings.apiBaseUrl || '';
+  el.settingsApiPin.value = state.settings.apiPin || '';
+}
 
   async function loadSettingsIntoState() {
     const all = await getAllSettings();
