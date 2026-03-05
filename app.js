@@ -331,10 +331,16 @@
   }
 
   function updateOnlineBadge() {
-    const online = navigator.onLine;
-    el.offlineBadge.textContent = online ? 'Online (ikke nødvendig)' : 'Offline klar';
-    el.offlineBadge.className = `badge ${online ? 'badge-warn' : 'badge-success'}`;
+  const online = navigator.onLine;
+
+  if (online) {
+    el.offlineBadge.textContent = 'Online';
+    el.offlineBadge.className = 'badge badge-success';
+  } else {
+    el.offlineBadge.textContent = 'Offline';
+    el.offlineBadge.className = 'badge badge-danger';
   }
+}
 
   function updateNfcBadge(kind = null) {
     if (kind) state.nfcSupport = kind;
