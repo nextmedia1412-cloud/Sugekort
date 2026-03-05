@@ -56,7 +56,7 @@
       }
     };
 
-    showMessage('Database klar (IndexedDB). App virker lokalt/offline efter første load.', 'success', 2500);
+    showMessage('App er klar til brug, Tjek er du køre på tailscale og API virker', 'success', 5500);
   } catch (err) {
     console.error(err);
     showMessage(`Databasefejl: ${err.message || err}`, 'error');
