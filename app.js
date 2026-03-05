@@ -238,6 +238,10 @@
     return await apiPost('/card/delete', { cardId });
   }
 
+  async function apiCardSearch(query, limit = 25) {
+  return await apiPost('/card/search', { query, limit });
+  }
+
   async function apiTxTopup({ cardId, amountOre, note, operatorName, clientTxId }) {
     return await apiPost('/tx/topup', { cardId, amountOre, note, operatorName, clientTxId });
   }
@@ -1199,10 +1203,39 @@ async function showCurrentCardHistory() {
   }
 
   async function onManualSearch() {
-    const query = el.manualSearchInput.value.trim();
-    const results = await searchCards(query);
-    renderManualResults(results);
+  const query = el.manualSearchInput.value.trim();
+
+  // Server-first hvis API er sat op
+  if (hasApiConfig()) {
+    try {
+      const resp = await apiCardSearch(query, 50);
+      const serverCards = Array.isArray(resp?.cards) ? resp.cards : [];
+
+      // cache resultater lokalt (så resten af appen kan bruge samme flow)
+      for (const row of serverCards) {
+        const { card, balance } = splitServerCardGetPayload(row);
+        await cacheServerCardAndBalance(card, balance);
+      }
+
+      // hent fra lokal cache til render (ensartet shape)
+      const localResults = await searchCards(query);
+      renderManualResults(localResults);
+
+      if (!localResults.length) {
+        showMessage('Ingen resultater fra server.', 'warn', 1800);
+      }
+      return;
+    } catch (err) {
+      console.error('API card/search fejl:', err);
+      showMessage(`Serversøgning fejlede: ${err.message || err}`, 'error', 2500);
+      // fallback til lokal søgning
+    }
   }
+
+  // Lokal fallback
+  const results = await searchCards(query);
+  renderManualResults(results);
+}
 
   function renderManualResults(results) {
     el.manualSearchResults.innerHTML = '';
