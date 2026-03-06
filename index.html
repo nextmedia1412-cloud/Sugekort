@@ -67,19 +67,6 @@
           </div>
           <div id="manualSearchResults" class="list"></div>
         </div>
-
-        <div class="panel">
-          <div class="panel-title">Data & backup</div>
-          <div class="grid-2">
-            <button id="btnExportJson" class="btn btn-secondary">Eksportér JSON</button>
-            <button id="btnExportCsv" class="btn btn-secondary">Eksportér CSV</button>
-          </div>
-          <div class="row gap mt8">
-            <label class="btn btn-ghost file-btn" for="importJsonFile">Importér backup JSON</label>
-            <input id="importJsonFile" type="file" accept="application/json,.json" hidden />
-          </div>
-          <p class="tiny muted">Eksport og import arbejder mod serverdata. Import kan overskrive den fælles database, så tryk ikke som en caffeineramt gibbon.</p>
-        </div>
       </section>
 
       <section id="screenMember" class="screen" aria-labelledby="memberHeading">
@@ -198,6 +185,17 @@
             <button id="btnClearPin" class="btn btn-ghost">Fjern PIN</button>
           </div>
           <p class="tiny muted">PIN bruges til admin-handlinger (custom beløb, blokering).</p>
+
+          <div class="panel-title mt8">Data &amp; backup</div>
+          <div class="grid-2">
+            <button id="btnExportJson" class="btn btn-secondary">Eksportér JSON</button>
+            <button id="btnExportCsv" class="btn btn-secondary">Eksportér CSV</button>
+          </div>
+          <div class="row gap mt8">
+            <label class="btn btn-ghost file-btn" for="importJsonFile">Importér backup JSON</label>
+            <input id="importJsonFile" type="file" accept="application/json,.json" hidden />
+          </div>
+          <p class="tiny muted">Eksport og import arbejder mod serverdata. Import kan overskrive den fælles database, så tryk ikke som en caffeineramt gibbon.</p>
 
           <div class="grid-2 mt8">
             <button id="btnSaveSettings" class="btn btn-primary">Gem indstillinger</button>
