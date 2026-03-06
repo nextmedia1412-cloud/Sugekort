@@ -62,7 +62,7 @@
       wipeLegacyDb: async () => deleteLegacyIndexedDb(true),
     };
 
-    showMessage('App klar. Data hentes fra server.', 'success', 2200);
+    await runStartupApiCheck();
 
     registerServiceWorker();
     setupInstallStateHints();
@@ -1077,6 +1077,34 @@
       throw err;
     }
     return data;
+  }
+
+  async function runStartupApiCheck() {
+    try {
+      if (!hasApiConfig()) {
+        setScanState('API ikke sat op', 'Udfyld API base URL og API PIN under Indstillinger før du scanner.', 'warn');
+        showMessage('API ikke testet ved opstart: mangler API base URL eller API PIN.', 'warn', 4200);
+        return;
+      }
+
+      if (!navigator.onLine) {
+        setScanState('Offline ved opstart', 'Telefonen er offline, så API-forbindelsen kunne ikke testes.', 'error');
+        showMessage('API ikke testet ved opstart: telefonen er offline.', 'error', 4200);
+        return;
+      }
+
+      const health = await apiGetHealth();
+      const dbText = health?.db ? ` DB: ${health.db}` : '';
+      setScanState('API forbindelse OK', `Serveren svarer korrekt.${dbText} Du kan scanne kort nu.`, 'success');
+      showMessage(`API forbindelse OK ✅${dbText}`, 'success', 2600);
+      showToast('API forbindelse virker', 'success');
+    } catch (err) {
+      console.error('Startup API check failed:', err);
+      const errText = err?.message || String(err);
+      setScanState('API forbindelse fejlede', `Kunne ikke kontakte serveren: ${errText}`, 'error');
+      showMessage(`API forbindelse fejlede ved opstart: ${errText}`, 'error', 4500);
+      vibrateError();
+    }
   }
 
   async function onTestApiConnection() {
