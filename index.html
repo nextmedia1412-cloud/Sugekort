@@ -59,7 +59,7 @@
             <label class="btn btn-ghost file-btn" for="importJsonFile">Importér backup JSON</label>
             <input id="importJsonFile" type="file" accept="application/json,.json" hidden />
           </div>
-          <p class="tiny muted">Alt data ligger på online server, ekport og import må kun bruges af admin.</p>
+          <p class="tiny muted">Alt data er lokalt på telefonen Lav jævnligt backup.</p>
         </div>
       </section>
 
@@ -87,11 +87,11 @@
           <div class="panel-title">Hurtige handlinger</div>
           <div class="grid-2 action-grid">
             <button id="btnTopup100" class="btn btn-success btn-lg">Top-Up +100 kr</button>
-            <button id="btnDeduct10" class="btn btn-danger btn-lg">-10 kr (Shot/Øl/Sodavand)</button>
-            <button id="btnDeduct25" class="btn btn-danger btn-lg">-20 kr (Redbull/Shaker/Smirnoff)</button>
-            <button id="btnDeduct50" class="btn btn-danger btn-lg">-30 kr (Drink)</button>
-            <button id="btnDeduct80" class="btn btn-danger btn-lg">-80 kr (10 shots)</button>
-            <button id="btnDeduct400" class="btn btn-danger btn-lg">-400 kr (Flaske m.6 vand)</button>
+            <button id="btnDeduct10" class="btn btn-danger btn-lg">Træk -10 kr (Shot / Øl / Sodavand)</button>
+            <button id="btnDeduct25" class="btn btn-danger btn-lg">Træk -20 kr (Redbull / Shaker / Smirnoff)</button>
+            <button id="btnDeduct50" class="btn btn-danger btn-lg">Træk -30 kr (Drink)</button>
+            <button id="btnDeduct80" class="btn danger">Træk -80 kr (10 shots)</button>
+            <button id="btnDeduct400" class="btn danger">Træk -400 kr (Flaske m. 6 vand)</button>
           </div>
           <div class="grid-2 mt8">
             <button id="btnShowHistory" class="btn btn-secondary">Vis historik</button>
@@ -161,13 +161,18 @@
           <input id="settingsClubName" class="input" type="text" placeholder="Sugekort Bar" maxlength="80" />
           <label class="label mt8" for="settingsOperatorName">Operator navn</label>
           <input id="settingsOperatorName" class="input" type="text" placeholder="Bartelefon" maxlength="80" />
-          <label class="label mt8" for="settingsApiBaseUrl">API base URL (V2)</label>
-          <input id="settingsApiBaseUrl" class="input" type="text" placeholder="API link" />
 
-          <label class="label mt8" for="settingsApiPin">API PIN (V2)</label>
-          <input id="settingsApiPin" class="input" type="password" placeholder="Kode til API" />
-
-          <div class="panel-title mt8">Admin PIN (valgfrit)</div>
+          
+          <div class="panel-title mt8">Server (fælles database)</div>
+          <label class="label mt8" for="settingsApiBaseUrl">API base URL</label>
+          <input id="settingsApiBaseUrl" class="input" type="url" placeholder="https://.../api" />
+          <label class="label mt8" for="settingsApiPin">API PIN</label>
+          <input id="settingsApiPin" class="input" type="password" inputmode="numeric" placeholder="PIN" />
+          <div class="row gap wrap mt8">
+            <button id="btnTestApi" class="btn btn-secondary" type="button">Test API</button>
+          </div>
+          <p class="tiny muted">Base URL skal pege på <span class="code">.../api</span>. PIN sendes som header <span class="code">X-Bar-Pin</span>.</p>
+<div class="panel-title mt8">Admin PIN (valgfrit)</div>
           <div class="row gap wrap">
             <input id="settingsPin" class="input" type="password" inputmode="numeric" placeholder="Ny PIN (min 4 cifre)" />
             <button id="btnSavePin" class="btn btn-secondary">Gem PIN</button>
@@ -178,7 +183,6 @@
           <div class="grid-2 mt8">
             <button id="btnSaveSettings" class="btn btn-primary">Gem indstillinger</button>
             <button id="btnSettingsBack" class="btn btn-ghost">Tilbage</button>
-            <button id="btnTestApi" class="btn btn-secondary mt8">Test API forbindelse</button>
           </div>
         </div>
       </section>
