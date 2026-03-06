@@ -191,17 +191,10 @@
       if (e.key === 'Enter') onManualSearch();
     });
 
-    // Eksport/import (lokal DB findes ikke længere)
-    if (el.btnExportJson) el.btnExportJson.addEventListener('click', () => {
-      showMessage('Server-mode: JSON eksport er ikke koblet på endnu.', 'warn', 3000);
-    });
-    if (el.btnExportCsv) el.btnExportCsv.addEventListener('click', () => {
-      showMessage('Server-mode: Brug historik på et kort og eksportér derfra.', 'warn', 3200);
-    });
-    if (el.importJsonFile) el.importJsonFile.addEventListener('change', (e) => {
-      e.target.value = '';
-      showMessage('Server-mode: Import er slået fra.', 'warn', 3000);
-    });
+    // Eksport/import (fælles serverdata)
+    if (el.btnExportJson) el.btnExportJson.addEventListener('click', exportServerBackupJson);
+    if (el.btnExportCsv) el.btnExportCsv.addEventListener('click', exportServerBackupCsv);
+    if (el.importJsonFile) el.importJsonFile.addEventListener('change', onImportBackupJsonSelected);
 
     el.btnBackToScan.addEventListener('click', () => showScreen('screenScan'));
 
@@ -860,6 +853,413 @@
     }
   }
 
+  async function exportServerBackupJson() {
+    if (!hasApiConfig()) {
+      showMessage('Mangler API base URL eller API PIN i indstillinger.', 'error');
+      showScreen('screenSettings');
+      return;
+    }
+    if (!navigator.onLine) {
+      showMessage('Offline: kan ikke hente backup fra serveren.', 'error', 2600);
+      return;
+    }
+
+    try {
+      showMessage('Henter fuld JSON-backup fra serveren…', 'warn', 0);
+      const backup = await fetchServerBackupData({ includeTransactions: true });
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
+      downloadBlob(blob, `sugekort-backup-${timestampForFilename()}.json`);
+      showMessage(`JSON backup klar. ${backup.stats.cardCount} kort · ${backup.stats.transactionCount} transaktioner.`, 'success', 3500);
+      showToast('Backup eksporteret ✅', 'success');
+    } catch (err) {
+      console.error(err);
+      showMessage(`Eksportfejl (JSON): ${err.message || err}`, 'error', 4200);
+      vibrateError();
+    }
+  }
+
+  async function exportServerBackupCsv() {
+    if (!hasApiConfig()) {
+      showMessage('Mangler API base URL eller API PIN i indstillinger.', 'error');
+      showScreen('screenSettings');
+      return;
+    }
+    if (!navigator.onLine) {
+      showMessage('Offline: kan ikke hente CSV fra serveren.', 'error', 2600);
+      return;
+    }
+
+    try {
+      showMessage('Henter kortoversigt fra serveren…', 'warn', 0);
+      const backup = await fetchServerBackupData({ includeTransactions: false });
+      const csv = cardsToCsv(backup.cards || []);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      downloadBlob(blob, `sugekort-kortoversigt-${timestampForFilename()}.csv`);
+      showMessage(`CSV eksport klar. ${backup.stats.cardCount} kort.`, 'success', 3000);
+      showToast('CSV eksporteret ✅', 'success');
+    } catch (err) {
+      console.error(err);
+      showMessage(`Eksportfejl (CSV): ${err.message || err}`, 'error', 4200);
+      vibrateError();
+    }
+  }
+
+  async function onImportBackupJsonSelected(event) {
+    const file = event?.target?.files?.[0];
+    if (event?.target) event.target.value = '';
+    if (!file) return;
+
+    if (!hasApiConfig()) {
+      showMessage('Mangler API base URL eller API PIN i indstillinger.', 'error');
+      showScreen('screenSettings');
+      return;
+    }
+    if (!navigator.onLine) {
+      showMessage('Offline: kan ikke importere til serveren.', 'error', 2600);
+      return;
+    }
+
+    try {
+      const raw = await readFileAsText(file);
+      const backup = parseBackupJson(raw);
+      const stats = buildBackupStats(backup.cards, backup.transactions);
+      const ok = confirm(
+        `ADVARSEL: Denne import OVERSKRIVER hele serverens data.
+
+` +
+        `Backup-fil: ${file.name}
+` +
+        `Kort i backup: ${stats.cardCount}
+` +
+        `Transaktioner i backup: ${stats.transactionCount}
+
+` +
+        `Appen forsøger først at hente en sikkerhedskopi af serverens nuværende data, og derefter slettes serverens indhold før backupen indlæses.
+
+` +
+        `Fortsæt?`
+      );
+      if (!ok) return;
+
+      let snapshotDownloaded = false;
+      try {
+        showMessage('Tager sikkerhedskopi af serverens nuværende data…', 'warn', 0);
+        const snapshot = await fetchServerBackupData({ includeTransactions: true });
+        const snapBlob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json;charset=utf-8' });
+        downloadBlob(snapBlob, `sugekort-server-snapshot-foer-import-${timestampForFilename()}.json`);
+        snapshotDownloaded = true;
+      } catch (snapshotErr) {
+        console.warn('Kunne ikke hente server snapshot før import:', snapshotErr);
+        const goOn = confirm(
+          `Kunne ikke hente sikkerhedskopi af nuværende serverdata.
+
+` +
+          `Fejl: ${snapshotErr?.message || snapshotErr}
+
+` +
+          `Vil du fortsætte importen alligevel?`
+        );
+        if (!goOn) return;
+      }
+
+      const result = await overwriteServerFromBackup(backup);
+      const snapshotMsg = snapshotDownloaded ? ' Der blev også hentet en sikkerhedskopi af den gamle serverdata.' : '';
+      const warningMsg = result.warnings.length ? ` Advarsler: ${result.warnings.length}.` : '';
+      showMessage(
+        `Import gennemført. ${result.importedCards} kort gendannet.${snapshotMsg}${warningMsg}`,
+        result.warnings.length ? 'warn' : 'success',
+        6000
+      );
+      showToast('Import gennemført ✅', result.warnings.length ? 'warn' : 'success');
+      if (result.warnings.length) {
+        console.warn('Import warnings:', result.warnings);
+      }
+    } catch (err) {
+      console.error(err);
+      showMessage(`Importfejl: ${err.message || err}`, 'error', 5000);
+      vibrateError();
+    }
+  }
+
+  async function fetchServerBackupData({ includeTransactions = true } = {}) {
+    const searchResults = await fetchAllCardsFromServer();
+    const cards = [];
+    const transactions = [];
+
+    for (let i = 0; i < searchResults.length; i++) {
+      const cardId = extractCardId(searchResults[i]);
+      if (!cardId) continue;
+
+      showMessage(
+        `Henter ${includeTransactions ? 'backup' : 'kortoversigt'} fra serveren… ${i + 1}/${searchResults.length}`,
+        'warn',
+        0
+      );
+
+      const resp = await apiCardGetById(cardId);
+      if (!resp?.found || !resp.card) continue;
+
+      const { card, balance } = splitServerCardGetPayload(resp.card);
+      cards.push({
+        cardId: card.cardId,
+        memberName: card.memberName,
+        status: card.status || 'active',
+        createdAt: card.createdAt || null,
+        updatedAt: card.updatedAt || null,
+        balanceOre: Number(balance?.balanceOre || 0),
+        balanceUpdatedAt: balance?.updatedAt || card.updatedAt || null
+      });
+
+      if (includeTransactions) {
+        const historyResp = await apiCardHistory(cardId, 5000);
+        const txs = normalizeTransactions(historyResp).map((tx) => ({
+          timestamp: tx.timestamp || null,
+          cardId: tx.cardId || card.cardId,
+          type: tx.type || '',
+          amountOre: Number(tx.amountOre || 0),
+          balanceBeforeOre: Number(tx.balanceBeforeOre || 0),
+          balanceAfterOre: Number(tx.balanceAfterOre || 0),
+          operatorName: tx.operatorName || '',
+          note: tx.note || ''
+        }));
+        transactions.push(...txs);
+      }
+
+      if ((i + 1) % 5 === 0) await nextUiFrame();
+    }
+
+    cards.sort((a, b) => String(a.memberName || a.cardId).localeCompare(String(b.memberName || b.cardId), 'da'));
+    transactions.sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+
+    return {
+      format: 'sugekort-server-backup-v1',
+      exportedAt: new Date().toISOString(),
+      appMode: 'server-only',
+      clubName: state.settings.clubName || DEFAULT_SETTINGS.clubName,
+      operatorName: state.settings.operatorName || DEFAULT_SETTINGS.operatorName,
+      cards,
+      transactions,
+      stats: buildBackupStats(cards, transactions)
+    };
+  }
+
+  async function fetchAllCardsFromServer() {
+    const searchTerms = ['', ...'0123456789abcdefghijklmnopqrstuvwxyzæøåABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅ'.split('')];
+    const cardMap = new Map();
+    let hadSuccessfulSearch = false;
+
+    for (const term of searchTerms) {
+      try {
+        const resp = await apiCardSearch(term, 5000);
+        hadSuccessfulSearch = true;
+        const results = normalizeSearchResults(resp);
+        for (const item of results) {
+          const cardId = extractCardId(item);
+          if (!cardId) continue;
+          if (!cardMap.has(cardId)) cardMap.set(cardId, item);
+        }
+
+        if (term === '' && results.length) break;
+      } catch (err) {
+        if (term === '') {
+          console.warn('Tom søgning understøttes ikke af API, bruger fallback-søgninger.', err);
+        } else {
+          console.warn(`Søgning fejlede for term "${term}":`, err);
+        }
+      }
+    }
+
+    if (!hadSuccessfulSearch) {
+      throw new Error('Kunne ikke hente kort fra serveren. Tjek at /card/search virker.');
+    }
+    return [...cardMap.values()];
+  }
+
+  async function overwriteServerFromBackup(backup) {
+    const warnings = [];
+    const existingCards = await fetchAllCardsFromServer();
+
+    for (let i = 0; i < existingCards.length; i++) {
+      const cardId = extractCardId(existingCards[i]);
+      if (!cardId) continue;
+      showMessage(`Sletter eksisterende serverdata… ${i + 1}/${existingCards.length}`, 'warn', 0);
+      await apiCardDelete(cardId);
+      if ((i + 1) % 10 === 0) await nextUiFrame();
+    }
+
+    const txByCard = new Map();
+    for (const tx of backup.transactions || []) {
+      const cardId = tx?.cardId;
+      if (!cardId) continue;
+      if (!txByCard.has(cardId)) txByCard.set(cardId, []);
+      txByCard.get(cardId).push(tx);
+    }
+    for (const list of txByCard.values()) {
+      list.sort((a, b) => String(a?.timestamp || '').localeCompare(String(b?.timestamp || '')));
+    }
+
+    let importedCards = 0;
+    for (let i = 0; i < backup.cards.length; i++) {
+      const card = backup.cards[i];
+      if (!card?.cardId) {
+        warnings.push('Et kort i backup mangler cardId og blev sprunget over.');
+        continue;
+      }
+
+      showMessage(`Importerer kort… ${i + 1}/${backup.cards.length}`, 'warn', 0);
+      await apiCardRegister({
+        cardId: card.cardId,
+        memberName: card.memberName || card.cardId,
+        status: 'active'
+      });
+
+      const txs = txByCard.get(card.cardId) || [];
+      if (txs.length) {
+        for (let txIndex = 0; txIndex < txs.length; txIndex++) {
+          const tx = txs[txIndex];
+          const mode = mapImportTxMode(tx);
+          const amountOre = Math.abs(Number(tx?.amountOre || 0));
+          if (!mode || !(amountOre > 0)) continue;
+
+          const noteParts = ['Import backup'];
+          if (tx?.note) noteParts.push(String(tx.note));
+          if (tx?.timestamp) noteParts.push(String(tx.timestamp));
+          const note = noteParts.join(' | ').slice(0, 250);
+          const basePayload = {
+            cardId: card.cardId,
+            amountOre,
+            note,
+            operatorName: tx?.operatorName || 'Backup import',
+            clientTxId: `import-${sanitizeFilename(card.cardId)}-${i}-${txIndex}-${Date.now()}`
+          };
+
+          if (mode === 'topup') {
+            await apiTxTopup(basePayload);
+          } else {
+            await apiTxPurchase(basePayload);
+          }
+        }
+      } else {
+        const balanceOre = Number(card.balanceOre || 0);
+        if (balanceOre > 0) {
+          await apiTxTopup({
+            cardId: card.cardId,
+            amountOre: balanceOre,
+            note: 'Import backup startsaldo',
+            operatorName: 'Backup import',
+            clientTxId: `import-balance-${sanitizeFilename(card.cardId)}-${Date.now()}`
+          });
+        } else if (balanceOre < 0) {
+          warnings.push(`Kort ${card.cardId} havde negativ saldo i backup og kunne ikke genskabes præcist.`);
+        }
+      }
+
+      if (String(card.status || '').toLowerCase() === 'blocked') {
+        await apiCardSetStatus(card.cardId, 'blocked');
+      }
+
+      importedCards += 1;
+      if ((i + 1) % 3 === 0) await nextUiFrame();
+    }
+
+    return { importedCards, warnings };
+  }
+
+  function buildBackupStats(cards = [], transactions = []) {
+    return {
+      cardCount: Array.isArray(cards) ? cards.length : 0,
+      transactionCount: Array.isArray(transactions) ? transactions.length : 0
+    };
+  }
+
+  function parseBackupJson(raw) {
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (err) {
+      throw new Error('JSON-filen kunne ikke læses.');
+    }
+
+    const cards = Array.isArray(data?.cards) ? data.cards : [];
+    const transactions = Array.isArray(data?.transactions) ? data.transactions : [];
+    if (!Array.isArray(data?.cards)) {
+      throw new Error('Backup-filen mangler feltet cards[].');
+    }
+
+    return {
+      format: data?.format || 'ukendt',
+      exportedAt: data?.exportedAt || null,
+      cards: cards.map((card) => ({
+        cardId: String(card?.cardId || '').trim(),
+        memberName: String(card?.memberName || card?.cardId || '').trim(),
+        status: String(card?.status || 'active').trim() || 'active',
+        createdAt: card?.createdAt || null,
+        updatedAt: card?.updatedAt || null,
+        balanceOre: Number(card?.balanceOre || 0),
+        balanceUpdatedAt: card?.balanceUpdatedAt || null
+      })),
+      transactions: transactions.map((tx) => ({
+        timestamp: tx?.timestamp || null,
+        cardId: String(tx?.cardId || '').trim(),
+        type: String(tx?.type || '').trim(),
+        amountOre: Number(tx?.amountOre || 0),
+        balanceBeforeOre: Number(tx?.balanceBeforeOre || 0),
+        balanceAfterOre: Number(tx?.balanceAfterOre || 0),
+        operatorName: String(tx?.operatorName || '').trim(),
+        note: String(tx?.note || '').trim()
+      })).filter((tx) => tx.cardId)
+    };
+  }
+
+  function normalizeSearchResults(resp) {
+    return Array.isArray(resp?.cards) ? resp.cards
+      : Array.isArray(resp?.results) ? resp.results
+      : Array.isArray(resp) ? resp
+      : [];
+  }
+
+  function normalizeTransactions(resp) {
+    return Array.isArray(resp?.transactions) ? resp.transactions
+      : Array.isArray(resp?.history) ? resp.history
+      : Array.isArray(resp) ? resp
+      : [];
+  }
+
+  function extractCardId(item) {
+    return String(item?.cardId || item?.card_id || '').trim();
+  }
+
+  function mapImportTxMode(tx) {
+    const type = String(tx?.type || '').toLowerCase();
+    if (type === 'purchase') return 'purchase';
+    if (type === 'topup' || type === 'refund') return 'topup';
+    if (type === 'adjustment') return Number(tx?.amountOre || 0) < 0 ? 'purchase' : 'topup';
+    if (Number(tx?.amountOre || 0) < 0) return 'purchase';
+    if (Number(tx?.amountOre || 0) > 0) return 'topup';
+    return null;
+  }
+
+  function cardsToCsv(cards) {
+    const header = [
+      'memberName', 'cardId', 'status', 'balanceOre', 'balanceKr', 'createdAt', 'updatedAt', 'balanceUpdatedAt'
+    ];
+    const lines = [header.join(';')];
+    for (const card of cards) {
+      const vals = [
+        card.memberName || '',
+        card.cardId || '',
+        card.status || 'active',
+        Number(card.balanceOre || 0),
+        oreToCsvKr(card.balanceOre || 0),
+        card.createdAt || '',
+        card.updatedAt || '',
+        card.balanceUpdatedAt || ''
+      ].map(csvEscape);
+      lines.push(vals.join(';'));
+    }
+    return lines.join('\n');
+  }
+
   function transactionsToCsv(rows) {
     const header = [
       'timestamp', 'cardId', 'type', 'amountOre', 'amountKr', 'balanceBeforeOre', 'balanceAfterOre', 'operatorName', 'note'
@@ -1257,6 +1657,14 @@
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  }
+
+  async function readFileAsText(file) {
+    return await file.text();
+  }
+
+  async function nextUiFrame() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
   function sanitizeFilename(s) {
