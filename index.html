@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#111111" />
-  <meta name="description" content="Lokal offline sugekort-app til klubbar med NFC" />
-  <title>Sugekort</title>
+  <meta name="theme-color" content="#090909" />
+  <meta name="description" content="Next Level MC sugekort-app med NFC, serverbackup og barstyring" />
+  <title>Next Level Sugekort</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="icon" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
@@ -14,11 +14,18 @@
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div>
-        <div class="eyebrow">Next Level MC</div>
-        <h1 id="clubTitle">Sugekort</h1>
+      <div class="topbar-brand">
+        <div class="brand-mark">
+          <img src="./next-level-logo.png" class="brand-logo" alt="Next Level MC patch" />
+        </div>
+        <div class="brand-copy">
+          <div class="eyebrow">Next Level MC · Danmark</div>
+          <h1 id="clubTitle">Sugekort</h1>
+          <p class="brand-tagline">Mørk drift, orange glød og serverstyret barterminal.</p>
+        </div>
       </div>
       <div class="status-stack">
+        <span class="badge badge-brand">Bar Terminal</span>
         <span id="offlineBadge" class="badge badge-muted">Tjekker…</span>
         <span id="nfcBadge" class="badge badge-muted">NFC ukendt</span>
       </div>
@@ -27,6 +34,18 @@
     <main>
       <section id="screenScan" class="screen active" aria-labelledby="scanHeading">
         <h2 id="scanHeading" class="screen-title">Scan kort</h2>
+
+        <div class="panel hero-panel">
+          <div class="hero-copy">
+            <div class="hero-kicker">Next Level Flow</div>
+            <div class="hero-title">Klar til klubdrift</div>
+            <p class="hero-text">Scan kort, træk varer, top-up saldo og tag backup direkte mod serveren. Ingen billig kiosk-energi her.</p>
+          </div>
+          <div class="hero-badge-wrap" aria-hidden="true">
+            <img src="./next-level-logo.png" class="hero-badge" alt="" />
+          </div>
+        </div>
+
         <div id="scanState" class="panel scan-state">
           <div class="pulse"></div>
           <div>
@@ -42,7 +61,7 @@
 
         <div class="panel">
           <div class="panel-title">Søg efter bruger</div>
-          <div class="row gap">
+          <div class="row gap search-row">
             <input id="manualSearchInput" class="input" type="text" placeholder="Søg navn eller card ID" />
             <button id="btnManualSearch" class="btn btn-secondary">Søg</button>
           </div>
@@ -59,7 +78,7 @@
             <label class="btn btn-ghost file-btn" for="importJsonFile">Importér backup JSON</label>
             <input id="importJsonFile" type="file" accept="application/json,.json" hidden />
           </div>
-          <p class="tiny muted">Data ligger på serveren. JSON henter fuld backup fra serveren, CSV henter kortoversigt, og import overskriver serverens data efter advarsel.</p>
+          <p class="tiny muted">Eksport og import arbejder mod serverdata. Import kan overskrive den fælles database, så tryk ikke som en caffeineramt gibbon.</p>
         </div>
       </section>
 
@@ -162,7 +181,6 @@
           <label class="label mt8" for="settingsOperatorName">Operator navn</label>
           <input id="settingsOperatorName" class="input" type="text" placeholder="Bartelefon" maxlength="80" />
 
-          
           <div class="panel-title mt8">Server (fælles database)</div>
           <label class="label mt8" for="settingsApiBaseUrl">API base URL</label>
           <input id="settingsApiBaseUrl" class="input" type="url" placeholder="https://.../api" />
@@ -172,7 +190,8 @@
             <button id="btnTestApi" class="btn btn-secondary" type="button">Test API</button>
           </div>
           <p class="tiny muted">Base URL skal pege på <span class="code">.../api</span>. PIN sendes som header <span class="code">X-Bar-Pin</span>.</p>
-<div class="panel-title mt8">Admin PIN (valgfrit)</div>
+
+          <div class="panel-title mt8">Admin PIN (valgfrit)</div>
           <div class="row gap wrap">
             <input id="settingsPin" class="input" type="password" inputmode="numeric" placeholder="Ny PIN (min 4 cifre)" />
             <button id="btnSavePin" class="btn btn-secondary">Gem PIN</button>
