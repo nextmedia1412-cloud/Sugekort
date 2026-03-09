@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sugekort-pwa-v5.2';
+const CACHE_NAME = 'sugekort-pwa-v5.3';
 const APP_SHELL = [
   './',
   './index.html',
