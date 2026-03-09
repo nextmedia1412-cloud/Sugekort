@@ -35,6 +35,18 @@
     itemEditorId: null,
   };
 
+  const SOUND_FILES = {
+    tap: './sounds/tap.mp3',
+    scanStart: './sounds/scan-start.mp3',
+    success: './sounds/success.mp3',
+    error: './sounds/error.mp3'
+  };
+
+  const soundState = {
+    unlocked: false,
+    bases: {}
+  };
+
   const el = {};
   let toastTimer = null;
 
@@ -42,6 +54,7 @@
 
   async function init() {
     bindElements();
+    setupSoundSystem();
     bindEvents();
 
     // UI badges
@@ -190,6 +203,10 @@
   }
 
   function bindEvents() {
+    document.addEventListener('pointerdown', unlockSoundSystem, { passive: true });
+    document.addEventListener('keydown', unlockSoundSystem);
+    document.addEventListener('click', handleGlobalUiClickSound, true);
+
     el.btnStartScan.addEventListener('click', startNfcScan);
     el.btnStopScan.addEventListener('click', stopNfcScan);
 
@@ -291,6 +308,7 @@
       updateNfcBadge();
       setScanState('Scanner…', 'Hold kortet/taggen roligt mod telefonens NFC-område.', 'neutral');
       showToast('NFC scan startet');
+      playSound('scanStart');
 
       state.nfcReader.onreadingerror = () => {
         setScanState('Scan fejlede', 'Kunne ikke læse tag. Prøv igen og hold kortet mere stabilt.', 'error');
@@ -1932,6 +1950,49 @@
   // UX helpers
   // =========================================================
 
+  function setupSoundSystem() {
+    for (const [name, src] of Object.entries(SOUND_FILES)) {
+      try {
+        const audio = new Audio(src);
+        audio.preload = 'auto';
+        soundState.bases[name] = audio;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function unlockSoundSystem() {
+    if (soundState.unlocked) return;
+    soundState.unlocked = true;
+    for (const audio of Object.values(soundState.bases)) {
+      try { audio.load(); } catch { /* ignore */ }
+    }
+  }
+
+  function handleGlobalUiClickSound(event) {
+    const target = event.target?.closest?.('button, .file-btn, summary');
+    if (!target) return;
+    if (target.id === 'btnStartScan') return;
+    if (target.matches?.('button:disabled')) return;
+    playSound('tap');
+  }
+
+  function playSound(name) {
+    if (!soundState.unlocked) return;
+    const base = soundState.bases[name];
+    if (!base) return;
+
+    try {
+      const audio = base.cloneNode();
+      audio.volume = name === 'tap' ? 0.30 : (name === 'scanStart' ? 0.50 : 0.58);
+      const result = audio.play();
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    } catch {
+      // ignore
+    }
+  }
+
   function showToast(text, kind = '') {
     el.toast.textContent = text;
     el.toast.className = `toast show ${kind}`.trim();
@@ -1942,6 +2003,9 @@
   }
 
   function showMessage(text, type = 'warn', timeoutMs = 3200) {
+    if (type === 'success') playSound('success');
+    if (type === 'error') playSound('error');
+
     el.messageBar.textContent = text;
     el.messageBar.className = `message-bar ${type}`;
     el.messageBar.classList.remove('hidden');
