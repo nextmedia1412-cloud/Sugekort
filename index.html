@@ -91,14 +91,8 @@
 
         <div class="panel">
           <div class="panel-title">Hurtige handlinger</div>
-          <div class="grid-2 action-grid">
-            <button id="btnTopup100" class="btn btn-success btn-lg">Top-Up +100 kr</button>
-            <button id="btnDeduct10" class="btn btn-danger btn-lg">Træk -10 kr (Shot / Øl / Sodavand)</button>
-            <button id="btnDeduct25" class="btn btn-danger btn-lg">Træk -20 kr (Redbull / Shaker / Smirnoff)</button>
-            <button id="btnDeduct50" class="btn btn-danger btn-lg">Træk -30 kr (Drink)</button>
-            <button id="btnDeduct80" class="btn btn-danger btn-lg">Træk -80 kr (10 shots)</button>
-            <button id="btnDeduct400" class="btn btn-danger btn-lg">Træk -400 kr (Flaske m. 6 vand)</button>
-          </div>
+          <div id="dynamicActionGrid" class="grid-2 action-grid"></div>
+          <p id="actionGridEmpty" class="tiny muted">Ingen varer/knapper sat op endnu. Tilføj dem under Indstillinger.</p>
           <div class="grid-2 mt8">
             <button id="btnShowHistory" class="btn btn-secondary">Vis historik</button>
             <button id="btnBackToScan" class="btn btn-ghost">Tilbage til scan</button>
@@ -196,6 +190,53 @@
             <input id="importJsonFile" type="file" accept="application/json,.json" hidden />
           </div>
           <p class="tiny muted">Eksport og import arbejder mod serverdata. Import kan overskrive den fælles database, så tryk ikke som en caffeineramt gibbon.</p>
+
+          <div class="panel-title mt8">Varer &amp; knapper</div>
+          <div id="itemEditorMode" class="tiny muted">Ny vare</div>
+
+          <label class="label mt8" for="settingsItemName">Varenavn</label>
+          <input id="settingsItemName" class="input" type="text" placeholder="Fx Øl" maxlength="80" />
+
+          <div class="grid-2 mt8">
+            <div>
+              <label class="label" for="settingsItemAmount">Beløb i kr</label>
+              <input id="settingsItemAmount" class="input" type="number" inputmode="decimal" step="0.01" min="0.01" placeholder="10" />
+            </div>
+            <div>
+              <label class="label" for="settingsItemType">Type</label>
+              <select id="settingsItemType" class="input">
+                <option value="purchase">Træk</option>
+                <option value="topup">Top-up</option>
+              </select>
+            </div>
+          </div>
+
+          <label class="label mt8" for="settingsItemButtonText">Knaptekst (valgfrit)</label>
+          <input id="settingsItemButtonText" class="input" type="text" placeholder="Tom = auto-generér tekst" maxlength="120" />
+
+          <div class="grid-2 mt8">
+            <div>
+              <label class="label" for="settingsItemStyle">Knapstil</label>
+              <select id="settingsItemStyle" class="input">
+                <option value="danger">Rød</option>
+                <option value="success">Grøn</option>
+                <option value="secondary">Mørk</option>
+                <option value="primary">Orange</option>
+                <option value="ghost">Ghost</option>
+              </select>
+            </div>
+            <div class="item-toggle-wrap">
+              <label class="checkbox"><input id="settingsItemActive" type="checkbox" checked /> Aktiv vare</label>
+            </div>
+          </div>
+
+          <div class="grid-2 mt8">
+            <button id="btnItemSave" class="btn btn-secondary" type="button">Gem vare</button>
+            <button id="btnItemEditorReset" class="btn btn-ghost" type="button">Ryd</button>
+          </div>
+
+          <div id="settingsItemsList" class="list mt8"></div>
+          <p class="tiny muted">Varer ligger på serveren og bruges automatisk som knapper på “Kort fundet”.</p>
 
           <div class="grid-2 mt8">
             <button id="btnSaveSettings" class="btn btn-primary">Gem indstillinger</button>
