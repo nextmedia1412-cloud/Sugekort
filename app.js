@@ -31,6 +31,8 @@
     nfcReader: null,
     scanning: false,
     settings: { ...DEFAULT_SETTINGS },
+    catalogItems: [],
+    itemEditorId: null,
   };
 
   const el = {};
@@ -63,6 +65,7 @@
     };
 
     await runStartupApiCheck();
+    await refreshCatalogFromServer({ silent: true });
 
     registerServiceWorker();
     setupInstallStateHints();
@@ -107,6 +110,8 @@
       await persistSettingsFromState();
       await loadSettingsIntoState(); // normaliser
       applySettingsToUI();
+      await refreshCatalogFromServer({ silent: true });
+      resetItemEditor();
 
       showMessage('Indstillinger gemt.', 'success', 1500);
     } catch (err) {
@@ -169,7 +174,7 @@
       'btnExportJson', 'btnExportCsv', 'importJsonFile',
       'screenScan', 'screenMember', 'screenRegister', 'screenHistory', 'screenSettings',
       'memberName', 'memberStatus', 'memberBalance', 'memberCardId', 'memberUpdated',
-      'btnTopup100', 'btnDeduct10', 'btnDeduct25', 'btnDeduct50', 'btnDeduct80', 'btnDeduct400',
+      'dynamicActionGrid', 'actionGridEmpty',
       'btnShowHistory', 'btnBackToScan',
       'adminPanel', 'adminAmountInput', 'btnAdminTopup', 'btnAdminDeduct', 'btnBlockUnblock', 'btnDeleteCard',
       'regScannedId', 'regSource', 'regGeneratedId', 'regHint', 'regMemberName', 'regActive', 'regWriteNdef',
@@ -177,6 +182,8 @@
       'historyTitle', 'historyList', 'btnHistoryExportCsv', 'btnHistoryBack',
       'settingsClubName', 'settingsOperatorName', 'settingsApiBaseUrl', 'settingsApiPin',
       'settingsPin', 'btnSavePin', 'btnClearPin', 'btnSaveSettings', 'btnSettingsBack', 'btnTestApi',
+      'itemEditorMode', 'settingsItemName', 'settingsItemAmount', 'settingsItemType', 'settingsItemButtonText',
+      'settingsItemStyle', 'settingsItemActive', 'btnItemSave', 'btnItemEditorReset', 'settingsItemsList',
       'navScan', 'navSettings', 'toast', 'messageBar'
     ];
     for (const id of ids) el[id] = document.getElementById(id);
@@ -197,14 +204,7 @@
     if (el.importJsonFile) el.importJsonFile.addEventListener('change', onImportBackupJsonSelected);
 
     el.btnBackToScan.addEventListener('click', () => showScreen('screenScan'));
-
-    // Quick actions (topup/purchase)
-    if (el.btnTopup100) el.btnTopup100.addEventListener('click', () => quickActionTopup(10000));
-    if (el.btnDeduct10) el.btnDeduct10.addEventListener('click', () => quickActionDeduct(1000, 'Shot / Øl / Sodavand'));
-    if (el.btnDeduct25) el.btnDeduct25.addEventListener('click', () => quickActionDeduct(2000, 'Redbull / Shaker / Smirnoff'));
-    if (el.btnDeduct50) el.btnDeduct50.addEventListener('click', () => quickActionDeduct(3000, 'Drink'));
-    if (el.btnDeduct80) el.btnDeduct80.addEventListener('click', () => quickActionDeduct(8000, '10 shots'));
-    if (el.btnDeduct400) el.btnDeduct400.addEventListener('click', () => quickActionDeduct(40000, 'Flaske m. 6 vand'));
+    renderMemberActionButtons();
 
     if (el.btnShowHistory) el.btnShowHistory.addEventListener('click', showCurrentCardHistory);
     if (el.btnDeleteCard) el.btnDeleteCard.addEventListener('click', deleteCurrentCardFromDatabase);
@@ -230,9 +230,13 @@
     el.navSettings.addEventListener('click', async () => {
       await loadSettingsIntoState();
       applySettingsToUI();
+      await refreshCatalogFromServer({ silent: true });
+      resetItemEditor();
       showScreen('screenSettings');
     });
 
+    if (el.btnItemSave) el.btnItemSave.addEventListener('click', saveCatalogItemFromEditor);
+    if (el.btnItemEditorReset) el.btnItemEditorReset.addEventListener('click', resetItemEditor);
     if (el.btnSaveSettings) el.btnSaveSettings.addEventListener('click', saveSettings);
     if (el.btnSettingsBack) el.btnSettingsBack.addEventListener('click', () => showScreen('screenScan'));
     if (el.btnSavePin) el.btnSavePin.addEventListener('click', saveAdminPin);
@@ -567,6 +571,294 @@
   }
 
   // =========================================================
+  // Server catalog (varer & knapper)
+  // =========================================================
+
+  function defaultCatalogButtonText({ name = '', amountOre = 0, type = 'purchase' } = {}) {
+    const action = type === 'topup' ? 'Top-Up +' : 'Træk -';
+    const suffix = name ? ` (${name})` : '';
+    return `${action}${formatOre(amountOre)}${suffix}`;
+  }
+
+  function normalizeCatalogItems(resp) {
+    const raw = Array.isArray(resp?.items) ? resp.items : (Array.isArray(resp) ? resp : []);
+    return raw.map((item) => ({
+      id: Number(item?.id),
+      name: String(item?.name || '').trim(),
+      amountOre: Number(item?.amountOre || 0),
+      type: String(item?.type || 'purchase').trim().toLowerCase() === 'topup' ? 'topup' : 'purchase',
+      buttonText: String(item?.buttonText || '').trim(),
+      style: String(item?.style || '').trim().toLowerCase() || 'secondary',
+      active: Boolean(item?.active),
+      sortOrder: Number(item?.sortOrder || 0),
+      createdAt: item?.createdAt || null,
+      updatedAt: item?.updatedAt || null
+    })).filter((item) => Number.isInteger(item.id) && item.id > 0)
+      .sort((a, b) => (a.sortOrder - b.sortOrder) || (a.id - b.id));
+  }
+
+  function getSortedCatalogItems(items = state.catalogItems) {
+    return [...(Array.isArray(items) ? items : [])].sort((a, b) => (a.sortOrder - b.sortOrder) || (a.id - b.id));
+  }
+
+  function getItemButtonClass(style = 'secondary') {
+    switch (style) {
+      case 'primary': return 'btn btn-primary btn-lg';
+      case 'success': return 'btn btn-success btn-lg';
+      case 'danger': return 'btn btn-danger btn-lg';
+      case 'ghost': return 'btn btn-ghost btn-lg';
+      default: return 'btn btn-secondary btn-lg';
+    }
+  }
+
+  async function refreshCatalogFromServer({ silent = false } = {}) {
+    if (!hasApiConfig()) {
+      state.catalogItems = [];
+      renderMemberActionButtons();
+      renderSettingsItemsList();
+      return [];
+    }
+    if (!navigator.onLine) {
+      renderMemberActionButtons();
+      renderSettingsItemsList();
+      if (!silent) showMessage('Offline: kan ikke hente varer fra serveren.', 'error', 2600);
+      return state.catalogItems;
+    }
+
+    try {
+      const resp = await apiItemsList();
+      state.catalogItems = normalizeCatalogItems(resp);
+      renderMemberActionButtons();
+      renderSettingsItemsList();
+      return state.catalogItems;
+    } catch (err) {
+      console.error('Kunne ikke hente varer:', err);
+      renderMemberActionButtons();
+      renderSettingsItemsList();
+      if (!silent) showMessage(`Kunne ikke hente varer fra serveren: ${err.message || err}`, 'error', 3500);
+      return state.catalogItems;
+    }
+  }
+
+  function renderMemberActionButtons() {
+    if (!el.dynamicActionGrid) return;
+
+    const items = getSortedCatalogItems().filter((item) => item.active);
+    const isBlocked = state.currentCard?.status === 'blocked';
+    const hasCard = !!state.currentCard;
+
+    el.dynamicActionGrid.innerHTML = '';
+    if (el.actionGridEmpty) el.actionGridEmpty.hidden = items.length > 0;
+
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = getItemButtonClass(item.style);
+      btn.textContent = item.buttonText || defaultCatalogButtonText(item);
+      btn.disabled = !hasCard || isBlocked;
+      btn.addEventListener('click', () => runCatalogItemAction(item));
+      el.dynamicActionGrid.appendChild(btn);
+    }
+  }
+
+  async function runCatalogItemAction(item) {
+    if (!state.currentCard || !item) return;
+
+    const isTopup = item.type === 'topup';
+    const actionLabel = isTopup ? 'Top-up' : 'Træk';
+    const itemLabel = item.name || item.buttonText || 'vare';
+    const ok = confirm(`${actionLabel} ${formatOre(item.amountOre)} (${itemLabel}) ${isTopup ? 'til' : 'fra'} ${state.currentCard.memberName}?`);
+    if (!ok) return;
+
+    await applyBalanceChange({
+      deltaOre: isTopup ? Math.abs(item.amountOre) : -Math.abs(item.amountOre),
+      note: `${isTopup ? 'Top-up' : 'Køb'} · ${itemLabel}`
+    });
+  }
+
+  function resetItemEditor() {
+    state.itemEditorId = null;
+    if (el.itemEditorMode) el.itemEditorMode.textContent = 'Ny vare';
+    if (el.settingsItemName) el.settingsItemName.value = '';
+    if (el.settingsItemAmount) el.settingsItemAmount.value = '';
+    if (el.settingsItemType) el.settingsItemType.value = 'purchase';
+    if (el.settingsItemButtonText) el.settingsItemButtonText.value = '';
+    if (el.settingsItemStyle) el.settingsItemStyle.value = 'danger';
+    if (el.settingsItemActive) el.settingsItemActive.checked = true;
+  }
+
+  function fillItemEditor(item) {
+    if (!item) return;
+    state.itemEditorId = Number(item.id);
+    if (el.itemEditorMode) el.itemEditorMode.textContent = `Redigerer vare #${item.id}`;
+    if (el.settingsItemName) el.settingsItemName.value = item.name || '';
+    if (el.settingsItemAmount) el.settingsItemAmount.value = (Number(item.amountOre || 0) / 100).toFixed(2).replace(/\.00$/, '');
+    if (el.settingsItemType) el.settingsItemType.value = item.type === 'topup' ? 'topup' : 'purchase';
+    if (el.settingsItemButtonText) el.settingsItemButtonText.value = item.buttonText || '';
+    if (el.settingsItemStyle) el.settingsItemStyle.value = item.style || (item.type === 'topup' ? 'success' : 'danger');
+    if (el.settingsItemActive) el.settingsItemActive.checked = Boolean(item.active);
+  }
+
+  function getCatalogItemFromEditor() {
+    const name = (el.settingsItemName?.value || '').trim();
+    const amountRaw = String(el.settingsItemAmount?.value || '').trim().replace(',', '.');
+    const amountKr = Number(amountRaw);
+    const amountOre = Math.round(amountKr * 100);
+    const type = (el.settingsItemType?.value || 'purchase').trim().toLowerCase() === 'topup' ? 'topup' : 'purchase';
+    const buttonTextRaw = (el.settingsItemButtonText?.value || '').trim();
+    const style = (el.settingsItemStyle?.value || (type === 'topup' ? 'success' : 'danger')).trim();
+    const active = Boolean(el.settingsItemActive?.checked);
+
+    return {
+      name,
+      amountOre,
+      type,
+      buttonText: buttonTextRaw || defaultCatalogButtonText({ name, amountOre, type }),
+      style,
+      active
+    };
+  }
+
+  function validateCatalogItemPayload(item) {
+    if (!item.name) return 'Varenavn mangler.';
+    if (!Number.isInteger(item.amountOre) || item.amountOre <= 0) return 'Beløb skal være større end 0.';
+    if (!['topup', 'purchase'].includes(item.type)) return 'Type er ugyldig.';
+    if (!item.buttonText) return 'Knaptekst kunne ikke dannes.';
+    return null;
+  }
+
+  async function saveCatalogItemFromEditor() {
+    if (!hasApiConfig()) {
+      showMessage('Mangler API base URL eller API PIN i indstillinger.', 'error');
+      showScreen('screenSettings');
+      return;
+    }
+    if (!navigator.onLine) {
+      showMessage('Offline: kan ikke gemme vare på serveren.', 'error', 2600);
+      return;
+    }
+
+    const payload = getCatalogItemFromEditor();
+    const validationError = validateCatalogItemPayload(payload);
+    if (validationError) {
+      showMessage(validationError, 'error');
+      return;
+    }
+
+    try {
+      if (state.itemEditorId) {
+        await apiItemUpdate({ id: state.itemEditorId, ...payload });
+        showMessage('Vare opdateret.', 'success', 1800);
+      } else {
+        await apiItemCreate(payload);
+        showMessage('Vare oprettet.', 'success', 1800);
+      }
+      await refreshCatalogFromServer({ silent: true });
+      resetItemEditor();
+      vibrateSuccess();
+    } catch (err) {
+      console.error(err);
+      showMessage(`Kunne ikke gemme vare: ${err.message || err}`, 'error', 3500);
+      vibrateError();
+    }
+  }
+
+  async function toggleCatalogItem(item) {
+    if (!item) return;
+    try {
+      await apiItemToggle(item.id, !item.active);
+      await refreshCatalogFromServer({ silent: true });
+      showMessage(`Vare ${item.active ? 'deaktiveret' : 'aktiveret'}.`, 'success', 1800);
+    } catch (err) {
+      console.error(err);
+      showMessage(`Kunne ikke ændre varestatus: ${err.message || err}`, 'error', 3500);
+    }
+  }
+
+  async function moveCatalogItem(item, direction) {
+    if (!item) return;
+    try {
+      await apiItemMove(item.id, direction);
+      await refreshCatalogFromServer({ silent: true });
+    } catch (err) {
+      console.error(err);
+      showMessage(`Kunne ikke flytte vare: ${err.message || err}`, 'error', 3500);
+    }
+  }
+
+  async function deleteCatalogItem(item) {
+    if (!item) return;
+    const ok = confirm(`Slet varen "${item.name}" fra serveren?`);
+    if (!ok) return;
+
+    try {
+      await apiItemDelete(item.id);
+      await refreshCatalogFromServer({ silent: true });
+      if (state.itemEditorId === item.id) resetItemEditor();
+      showMessage('Vare slettet.', 'success', 1800);
+      vibrateSuccess();
+    } catch (err) {
+      console.error(err);
+      showMessage(`Kunne ikke slette vare: ${err.message || err}`, 'error', 3500);
+      vibrateError();
+    }
+  }
+
+  function renderSettingsItemsList() {
+    if (!el.settingsItemsList) return;
+
+    if (!hasApiConfig()) {
+      el.settingsItemsList.innerHTML = '<div class="list-item muted">Sæt API base URL og API PIN først, så kan varer hentes fra serveren.</div>';
+      return;
+    }
+
+    const items = getSortedCatalogItems();
+    el.settingsItemsList.innerHTML = '';
+
+    if (!items.length) {
+      el.settingsItemsList.innerHTML = '<div class="list-item muted">Ingen varer på serveren endnu.</div>';
+      return;
+    }
+
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'list-item item-row';
+
+      const meta = document.createElement('div');
+      meta.className = 'item-row-meta';
+      meta.innerHTML = `
+        <div class="item-row-title">${escapeHtml(item.name)}</div>
+        <div class="meta">${escapeHtml(item.buttonText || defaultCatalogButtonText(item))}</div>
+        <div class="meta">${item.type === 'topup' ? 'Top-up' : 'Træk'} · ${escapeHtml(formatOre(item.amountOre))} · ${item.active ? 'Aktiv' : 'Inaktiv'}</div>
+      `;
+
+      const actions = document.createElement('div');
+      actions.className = 'item-row-actions';
+
+      const buttons = [
+        { text: 'Redigér', cls: 'btn btn-secondary', onClick: () => fillItemEditor(item) },
+        { text: item.active ? 'Slå fra' : 'Slå til', cls: 'btn btn-ghost', onClick: () => toggleCatalogItem(item) },
+        { text: '↑', cls: 'btn btn-ghost', onClick: () => moveCatalogItem(item, 'up') },
+        { text: '↓', cls: 'btn btn-ghost', onClick: () => moveCatalogItem(item, 'down') },
+        { text: 'Slet', cls: 'btn btn-danger', onClick: () => deleteCatalogItem(item) }
+      ];
+
+      for (const cfg of buttons) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `${cfg.cls} item-action-btn`;
+        btn.textContent = cfg.text;
+        btn.addEventListener('click', cfg.onClick);
+        actions.appendChild(btn);
+      }
+
+      row.appendChild(meta);
+      row.appendChild(actions);
+      el.settingsItemsList.appendChild(row);
+    }
+  }
+
+  // =========================================================
   // Member screen + actions
   // =========================================================
 
@@ -585,15 +877,7 @@
     el.memberStatus.className = `badge ${card.status === 'blocked' ? 'badge-danger' : 'badge-success'}`;
     el.btnBlockUnblock.textContent = card.status === 'blocked' ? 'Ophæv blokering' : 'Blokér kort';
 
-    const isBlocked = card.status === 'blocked';
-    [
-      el.btnTopup100,
-      el.btnDeduct10,
-      el.btnDeduct25,
-      el.btnDeduct50,
-      el.btnDeduct80,
-      el.btnDeduct400
-    ].filter(Boolean).forEach(btn => btn.disabled = isBlocked);
+    renderMemberActionButtons();
 
     if (el.btnAdminTopup) el.btnAdminTopup.disabled = false;
     if (el.btnAdminDeduct) el.btnAdminDeduct.disabled = false;
@@ -605,28 +889,6 @@
     if (!resp?.found || !resp.card) throw new Error('Kort findes ikke længere');
     const { card, balance } = splitServerCardGetPayload(resp.card);
     await loadCardIntoMemberScreen(card, balance);
-  }
-
-  async function quickActionTopup(amountOre) {
-    if (!state.currentCard) return;
-    const ok = confirm(`Top-up ${formatOre(amountOre)} til ${state.currentCard.memberName}?`);
-    if (!ok) return;
-
-    await applyBalanceChange({
-      deltaOre: amountOre,
-      note: 'Quick top-up'
-    });
-  }
-
-  async function quickActionDeduct(amountOre, productLabel = 'Køb') {
-    if (!state.currentCard) return;
-    const ok = confirm(`Træk ${formatOre(amountOre)} (${productLabel}) fra ${state.currentCard.memberName}?`);
-    if (!ok) return;
-
-    await applyBalanceChange({
-      deltaOre: -Math.abs(amountOre),
-      note: `Køb · ${productLabel}`
-    });
   }
 
   async function adminCustomAction(mode) {
@@ -922,12 +1184,14 @@
     try {
       const raw = await readFileAsText(file);
       const backup = parseBackupJson(raw);
-      const stats = buildBackupStats(backup.cards, backup.transactions);
+      const stats = buildBackupStats(backup.cards, backup.transactions, backup.items);
       const ok = confirm(
         `ADVARSEL: Denne import OVERSKRIVER hele serverens data.
 
 ` +
         `Backup-fil: ${file.name}
+` +
+        `Varer i backup: ${stats.itemCount}
 ` +
         `Kort i backup: ${stats.cardCount}
 ` +
@@ -982,6 +1246,8 @@
   }
 
   async function fetchServerBackupData({ includeTransactions = true } = {}) {
+    const itemsResp = await apiItemsList();
+    const items = normalizeCatalogItems(itemsResp);
     const searchResults = await fetchAllCardsFromServer();
     const cards = [];
     const transactions = [];
@@ -1032,14 +1298,15 @@
     transactions.sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
 
     return {
-      format: 'sugekort-server-backup-v1',
+      format: 'sugekort-server-backup-v2',
       exportedAt: new Date().toISOString(),
       appMode: 'server-only',
       clubName: state.settings.clubName || DEFAULT_SETTINGS.clubName,
       operatorName: state.settings.operatorName || DEFAULT_SETTINGS.operatorName,
+      items,
       cards,
       transactions,
-      stats: buildBackupStats(cards, transactions)
+      stats: buildBackupStats(cards, transactions, items)
     };
   }
 
@@ -1085,6 +1352,31 @@
       showMessage(`Sletter eksisterende serverdata… ${i + 1}/${existingCards.length}`, 'warn', 0);
       await apiCardDelete(cardId);
       if ((i + 1) % 10 === 0) await nextUiFrame();
+    }
+
+    if (backup.hasItemsField) {
+      const existingItems = normalizeCatalogItems(await apiItemsList());
+      for (let i = 0; i < existingItems.length; i++) {
+        showMessage(`Sletter eksisterende varer… ${i + 1}/${existingItems.length}`, 'warn', 0);
+        await apiItemDelete(existingItems[i].id);
+      }
+
+      const sortedItems = getSortedCatalogItems(backup.items);
+      for (let i = 0; i < sortedItems.length; i++) {
+        const item = sortedItems[i];
+        showMessage(`Importerer varer… ${i + 1}/${sortedItems.length}`, 'warn', 0);
+        await apiItemCreate({
+          name: item.name,
+          amountOre: item.amountOre,
+          type: item.type,
+          buttonText: item.buttonText || defaultCatalogButtonText(item),
+          style: item.style || (item.type === 'topup' ? 'success' : 'danger'),
+          active: item.active,
+          sortOrder: Number.isInteger(item.sortOrder) ? item.sortOrder : (i + 1)
+        });
+      }
+    } else {
+      warnings.push('Backup-filen mangler items[]. Eksisterende varer på serveren blev bevaret.');
     }
 
     const txByCard = new Map();
@@ -1162,11 +1454,13 @@
       if ((i + 1) % 3 === 0) await nextUiFrame();
     }
 
+    await refreshCatalogFromServer({ silent: true });
     return { importedCards, warnings };
   }
 
-  function buildBackupStats(cards = [], transactions = []) {
+  function buildBackupStats(cards = [], transactions = [], items = []) {
     return {
+      itemCount: Array.isArray(items) ? items.length : 0,
       cardCount: Array.isArray(cards) ? cards.length : 0,
       transactionCount: Array.isArray(transactions) ? transactions.length : 0
     };
@@ -1182,6 +1476,8 @@
 
     const cards = Array.isArray(data?.cards) ? data.cards : [];
     const transactions = Array.isArray(data?.transactions) ? data.transactions : [];
+    const hasItemsField = Array.isArray(data?.items);
+    const items = hasItemsField ? data.items : [];
     if (!Array.isArray(data?.cards)) {
       throw new Error('Backup-filen mangler feltet cards[].');
     }
@@ -1189,6 +1485,8 @@
     return {
       format: data?.format || 'ukendt',
       exportedAt: data?.exportedAt || null,
+      hasItemsField,
+      items: normalizeCatalogItems(items),
       cards: cards.map((card) => ({
         cardId: String(card?.cardId || '').trim(),
         memberName: String(card?.memberName || card?.cardId || '').trim(),
@@ -1555,6 +1853,30 @@
   async function apiCardSearch(query, limit = 50) {
     // send både "query" og "q" for at være robust mod backend-navne
     return await apiPost('/card/search', { query, q: query, limit });
+  }
+
+  async function apiItemsList() {
+    return await apiPost('/items/list', {});
+  }
+
+  async function apiItemCreate(payload) {
+    return await apiPost('/items/create', payload);
+  }
+
+  async function apiItemUpdate(payload) {
+    return await apiPost('/items/update', payload);
+  }
+
+  async function apiItemDelete(id) {
+    return await apiPost('/items/delete', { id });
+  }
+
+  async function apiItemToggle(id, active) {
+    return await apiPost('/items/toggle', { id, active });
+  }
+
+  async function apiItemMove(id, direction) {
+    return await apiPost('/items/move', { id, direction });
   }
 
   // =========================================================
